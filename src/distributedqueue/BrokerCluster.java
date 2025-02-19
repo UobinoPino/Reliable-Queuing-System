@@ -8,7 +8,7 @@ import java.util.List;
  *  - We can manually add brokers and designate which one is leader.
  *  - We can request failover (manual approach).
  *
- * For real systems, you'd have a robust distributed consensus or election algorithm (e.g., Raft/ZooKeeper).
+ * For real systems, you'd have a robust distributed consensus or election algorithm (e.g., Raft/ZooKeeper) eheheheh --> to fx this
  *
  * Requirements addressed:
  * 1 (leader-follower), 2 (heartbeats placeholder), 3 (leader election placeholder),
