@@ -31,14 +31,28 @@ public class ClientMain {
 
         // 5. Read from the leader:
         Integer item = client.readData("myQueue");
+        Integer item2 = client.readData("myQueue");
         System.out.println("Client read (leader): " + item);
+        System.out.println("Client read (leader): " + item2);
 
         // 6. (Optional) Reconnect to a FollowerBroker (e.g., 192.168.1.11:5002) to read data:
         //    This is only useful if you have a running FollowerBroker on that machine/port.
         //client.reconnect("192.168.1.11", 5002); non da stesso pc
         client.reconnect("127.0.0.1", 5002);
-        Integer item2 = client.readData("myQueue");
-        System.out.println("Client read (follower): " + item2);
+        client.appendData("myQueue", 400);
+        Integer item3 = client.readData("myQueue");
+        Integer item4 = client.readData("myQueue");
+        System.out.println("Client read (leader): " + item3);
+        System.out.println("Client read (leader): " + item4);
+        // to fix: when writing from client also the offset needs to be updated? and check also reading
+
+        client.reconnect("127.0.0.1", 5001);
+        client.appendData("myQueue", 500);
+        Integer item5 = client.readData("myQueue");
+        Integer item6 = client.readData("myQueue");
+
+        System.out.println("Client read (follower): " + item5);
+        System.out.println("Client read (follower): " + item6);
 
         // 7. Keep running to allow for additional demonstration commands if desired.
         while (true) {

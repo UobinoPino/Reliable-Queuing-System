@@ -10,6 +10,9 @@ import java.util.Map;
  *       1) Sends the read request to the leader to get the correct next item.
  *       2) The leader reads and updates offset, replicates offset to all brokers.
  *       3) Follower receives offset update, stores it, and returns the item from the leader to the client.
+ *  - For append requests from clients, this updated design:
+ *  *       1) Forwards the append request to the leader via "FORWARDED_APPEND".
+ *  *       2) Leader performs the actual append and replicates to all followers.
  */
 public class FollowerBroker implements BrokerNode {
 
@@ -55,11 +58,18 @@ public class FollowerBroker implements BrokerNode {
         queueManager.createQueue(queueName);
     }
 
+    /**
+     * On a follower, the updated logic is:
+     *   1) Forward the append request to the leader using "FORWARDED_APPEND|queueName|data".
+     *   2) The leader appends it and replicates to all followers.
+     *   3) This follower eventually receives the replication call and updates its local state.
+     */
     @Override
     public void appendData(String queueName, int data) {
-        // Follower doesn't accept direct appends from outside in a typical scenario;
-        // it only replicates from the leader. But we allow a local append for test.
-        queueManager.appendData(queueName, data);
+        String request = "FORWARDED_APPEND"
+                + NetworkUtils.MSG_SEPARATOR + queueName
+                + NetworkUtils.MSG_SEPARATOR + data;
+        NetworkClient.sendRequest(leaderHost, leaderPort, request);
     }
 
     /**

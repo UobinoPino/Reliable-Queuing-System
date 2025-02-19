@@ -9,6 +9,14 @@ import java.net.Socket;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * A simple TCP server that handles requests from clients or brokers in a concurrent manner.
+ * Each connection is handled in its own thread.
+ *
+ * Updated to support "FORWARDED_APPEND" requests from followers:
+ *   FORWARDED_APPEND|<queueName>|<data> -> The leader calls broker.appendData(...) and
+ *   then replicates the new data to followers.
+ */
 public class NetworkServer {
 
     private static volatile boolean running = false;
@@ -82,7 +90,16 @@ public class NetworkServer {
     }
 
     /**
-     * Processes commands by splitting on NetworkUtils.MSG_SEPARATOR, which should be "|".
+     * Minimal text-based protocol:
+     *   FORWARDED_READ|<queueName>|<clientId>
+     *   FORWARDED_APPEND|<queueName>|<data>
+     *   REPLICATE|<queueName>|<data>
+     *   UPDATEOFFSET|<queueName>|<clientId>|<offset>
+     *   REGISTER|<followerHost>|<followerPort>
+     *   CREATE|<queueName>
+     *   APPEND|<queueName>|<data>
+     *   READ|<queueName>|<clientId>
+     *   SNAPSHOT
      */
     private static String processRequest(BrokerNode broker, String[] parts) {
        // String[] parts = request.split(NetworkUtils.MSG_SEPARATOR);
@@ -101,6 +118,26 @@ public class NetworkServer {
                 String cId = parts[2];
                 Integer val = broker.readData(qName, cId);
                 return val == null ? "null" : val.toString();
+            }
+            case "FORWARDED_APPEND": {
+                // Only a leader can handle an append and replicate. If this is a follower, it won't do anything special.
+                // But typically, we expect this to arrive at the leader, which calls appendData in the standard way.
+                if (!broker.isLeader()) {
+                    return "ERROR|Not leader";
+                }
+                if (parts.length < 3) {
+                    return "ERROR|Missing args for FORWARDED_APPEND";
+                }
+                String qName = parts[1];
+                int data;
+                try {
+                    data = Integer.parseInt(parts[2]);
+                } catch (NumberFormatException e) {
+                    return "ERROR|Invalid data integer";
+                }
+                // The broker here should be a LeaderBroker instance
+                broker.appendData(qName, data);
+                return "OK";
             }
             case "REPLICATE": {
                 if (parts.length < 3) {
