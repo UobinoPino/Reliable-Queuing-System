@@ -1,98 +1,83 @@
 package distributedqueue;
 
-import java.io.*;
-import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.ArrayList;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.*;
 
 /**
- * Manages persistence of the queues on disk.
- *
- * Requirements addressed:
- * 11 (stable storage), 12 (supports recovery), 14 (persist client offsets).
+ * Manages the in-memory and on-disk state of each queue and the read offsets for each client.
+ * For demonstration, everything is quite simple.
  */
 public class QueueManager {
 
-    private static final String QUEUE_DIR = "queues";
-    private static final String OFFSET_DIR = "offsets";
+    // queueData: Map<queueName, List<Integer>>
+    private final Map<String, List<Integer>> queueData = Collections.synchronizedMap(new HashMap<>());
+
+    // clientOffsets: Map<queueName, Map<clientId, int>>
+    private final Map<String, Map<String, Integer>> clientOffsets = Collections.synchronizedMap(new HashMap<>());
 
     public QueueManager() {
-        File queueDir = new File(QUEUE_DIR);
-        if (!queueDir.exists()) {
-            queueDir.mkdirs();
-        }
-        File offsetDir = new File(OFFSET_DIR);
-        if (!offsetDir.exists()) {
-            offsetDir.mkdirs();
-        }
+        // For demonstration, you may optionally load existing data from disk
+        // or keep it purely in-memory.
     }
 
-    public void createQueueOnDisk(String queueName) {
-        File queueFile = new File(QUEUE_DIR, queueName + ".data");
-        try {
-            if (!queueFile.exists()) {
-                queueFile.createNewFile();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public synchronized void createQueue(String queueName) {
+        queueData.putIfAbsent(queueName, new ArrayList<>());
+        clientOffsets.putIfAbsent(queueName, new HashMap<>());
     }
 
-    public void appendDataToDisk(String queueName, int data) {
-        File queueFile = new File(QUEUE_DIR, queueName + ".data");
-        try (FileWriter fw = new FileWriter(queueFile, true)) {
-            fw.write(data + "\n");
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public void persistClientOffsetToDisk(String queueName, String clientId, int offset) {
-        File offsetFile = new File(OFFSET_DIR, queueName + "_" + clientId + ".offset");
-        try (FileWriter fw = new FileWriter(offsetFile, false)) {
-            fw.write(String.valueOf(offset));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public int readClientOffsetFromDisk(String queueName, String clientId) {
-        File offsetFile = new File(OFFSET_DIR, queueName + "_" + clientId + ".offset");
-        if (!offsetFile.exists()) {
-            return 0;
-        }
-        try (BufferedReader br = new BufferedReader(new FileReader(offsetFile))) {
-            String offsetStr = br.readLine();
-            return offsetStr == null ? 0 : Integer.parseInt(offsetStr);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return 0;
+    public synchronized void appendData(String queueName, int data) {
+        queueData.computeIfAbsent(queueName, k -> new ArrayList<>()).add(data);
     }
 
     /**
-     * Load a queue from disk.
-     * @param queueName The queue name.
-     * @return The in-memory list of data.
+     * Reads the next entry in the queue for the client, increments the offset.
+     * If no data is available, returns null.
      */
-    public List<Integer> loadQueueData(String queueName) {
-        File queueFile = new File(QUEUE_DIR, queueName + ".data");
-        List<Integer> dataList = new ArrayList<>();
-        if (!queueFile.exists()) {
-            return dataList;
+    public synchronized Integer readNext(String queueName, String clientId) {
+        List<Integer> list = queueData.get(queueName);
+        if (list == null) {
+            return null;
         }
-        try (BufferedReader br = new BufferedReader(new FileReader(queueFile))) {
-            br.lines().forEach(line -> {
-                try {
-                    dataList.add(Integer.parseInt(line));
-                } catch (NumberFormatException e) {
-                    e.printStackTrace();
-                }
-            });
-        } catch (IOException e) {
-            e.printStackTrace();
+        Map<String, Integer> offsetsForQueue = clientOffsets.get(queueName);
+        if (offsetsForQueue == null) {
+            return null;
         }
-        return dataList;
+        int currentOffset = offsetsForQueue.getOrDefault(clientId, -1);
+        int nextIndex = currentOffset + 1;
+        if (nextIndex >= list.size()) {
+            // No new data
+            return null;
+        }
+        Integer item = list.get(nextIndex);
+        // Update offset
+        offsetsForQueue.put(clientId, nextIndex);
+        return item;
+    }
+
+    public synchronized Map<String, List<Integer>> getAllQueuesSnapshot() {
+        // Return a copy of queue data
+        Map<String, List<Integer>> copy = new HashMap<>();
+        for (var entry : queueData.entrySet()) {
+            copy.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        return copy;
+    }
+
+    public synchronized int getClientOffset(String queueName, String clientId) {
+        Map<String, Integer> offsetsForQueue = clientOffsets.get(queueName);
+        if (offsetsForQueue == null) {
+            return -1;
+        }
+        return offsetsForQueue.getOrDefault(clientId, -1);
+    }
+
+    public synchronized void setClientOffset(String queueName, String clientId, int newOffset) {
+        if (!clientOffsets.containsKey(queueName)) {
+            clientOffsets.put(queueName, new HashMap<>());
+        }
+        clientOffsets.get(queueName).put(clientId, newOffset);
     }
 }
