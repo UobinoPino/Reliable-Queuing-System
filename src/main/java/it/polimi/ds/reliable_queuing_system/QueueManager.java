@@ -1,9 +1,5 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.*;
 
 /**

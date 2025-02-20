@@ -1,4 +1,4 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
 /**
  * Holds the common network constants and operations for splitting requests.

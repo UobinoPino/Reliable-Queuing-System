@@ -1,4 +1,4 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
 import java.io.BufferedReader;
 import java.io.IOException;

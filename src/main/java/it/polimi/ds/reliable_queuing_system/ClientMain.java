@@ -1,4 +1,4 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
 /**
  * Demonstrates a client connecting to the distributed queue system to:

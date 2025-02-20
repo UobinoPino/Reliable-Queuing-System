@@ -1,4 +1,4 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
 import java.util.HashMap;
 import java.util.List;

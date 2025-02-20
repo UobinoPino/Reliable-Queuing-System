@@ -1,4 +1,4 @@
-package distributedqueue;
+package it.polimi.ds.reliable_queuing_system;
 
 /**
  * Launches a single LeaderBroker in the "distributedqueue" package.
