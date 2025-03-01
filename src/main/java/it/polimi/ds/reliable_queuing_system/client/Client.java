@@ -1,23 +1,21 @@
 package it.polimi.ds.reliable_queuing_system.client;
 
-import it.polimi.ds.reliable_queuing_system.utils.MsgType;
+import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Constants;
-import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.Socket;
-import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Scanner;
 
+/// An executable class representing a client.
 public class Client {
     private static final Scanner scanner = new Scanner(System.in);
     private static String brokerIp;
     private static Integer clientId;
+    private static Integer nextOperationId = 0;
 
     public static void main(String[] args) {
         System.out.println("======== RELIABLE QUEUING SYSTEM: CLIENT ========");
@@ -36,7 +34,7 @@ public class Client {
                 case "r" -> performRead();
                 case "w" -> performWrite();
                 case "q" -> { }
-                default -> System.out.println("Invalid command. Please enter either 'r', 'w' or 'q'");
+                default -> System.out.println("[ERROR]: Invalid command. Please enter either 'r', 'w' or 'q'");
             }
         } while (!input.equalsIgnoreCase("q"));
 
@@ -56,28 +54,28 @@ public class Client {
     public static void requestClientId() {
         // open a new socket with the known broker
         try (Socket socket = new Socket(brokerIp, Constants.clientEndpointPort)) {
-            BufferedReader fromBroker = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            PrintWriter toBroker = new PrintWriter(socket.getOutputStream(), true);
+            ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
+            toBroker.flush();
+            ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
 
             // request a new ID to the broker
-            JSONObject req = new JSONObject();
-            req.put("type", MsgType.request_client_id);
-            toBroker.println(req);
+            toBroker.writeObject(new ClientIdRequest());
+            toBroker.flush();
 
             // wait for the broker to reply with an id
             while (clientId == null) {
-                String res = fromBroker.readLine();
-                JSONObject resObj = new JSONObject(res);
-                MsgType resType = MsgType.valueOf(resObj.getString("type"));
-                if (resType == MsgType.assign_client_id) {
-                    clientId = resObj.getInt("id");
+                try {
+                    Message res = (Message) fromBroker.readObject();
+                    if (res instanceof ClientIdAssignment assignment) {
+                        clientId = assignment.clientId();
+                    }
+                } catch (ClassNotFoundException | ClassCastException ignored) {
+                    System.out.println("[WARN]: Unknown message received, it will be ignored.");
                 }
             }
-        } catch (UnknownHostException e) {
-            brokerIp = null;
-            System.out.println("Unable to reach the broker at the given IP, please specify another one.");
         } catch (IOException e) {
-            e.printStackTrace();  //TODO: handle better?
+            brokerIp = null;
+            System.out.println("[ERROR]: Unable to reach the broker at the given IP, please specify another one.");
         }
     }
 
@@ -88,25 +86,25 @@ public class Client {
 
         // open a socket with the known broker
         try (Socket socket = new Socket(brokerIp, Constants.clientEndpointPort)) {
-            BufferedReader fromBroker = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            PrintWriter toBroker = new PrintWriter(socket.getOutputStream(), true);
+            ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
+            toBroker.flush();
+            ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
 
             // send a read request to the broker
-            JSONObject msg = new JSONObject();
-            msg.put("type", MsgType.read_req);
-            msg.put("queue_id", queueId);
-            msg.put("client_id", clientId);
-            toBroker.println(msg);
+            toBroker.writeObject(new ReadRequest(queueId, clientId, nextOperationId++));
+            toBroker.flush();
 
             // wait for the broker to reply
             socket.setSoTimeout(Constants.maxWaitForBrokerResponse);
             List<Integer> queueValues = null;
             while (queueValues == null) {
-                String res = fromBroker.readLine();
-                JSONObject resObj = new JSONObject(res);
-                MsgType resType = MsgType.valueOf(resObj.getString("type"));
-                if(resType == MsgType.read_res) {
-                    queueValues = resObj.getJSONArray("values").toList().stream().map(el -> (Integer) el).toList();
+                try {
+                    Message res = (Message) fromBroker.readObject();
+                    if (res instanceof ReadResponse readResponse) {
+                        queueValues = readResponse.values();
+                    }
+                } catch (ClassNotFoundException | ClassCastException ignored) {
+                    System.out.println("[WARN]: Unknown message received, it will be ignored.");
                 }
             }
 
@@ -116,12 +114,10 @@ public class Client {
             } else {
                 System.out.println("New values in queue '" + queueId + "' has been found: " + queueValues);
             }
-        } catch (UnknownHostException | SocketTimeoutException e) {
-            brokerIp = null;
-            System.out.println("Unable to reach the broker at the given IP, please specify another one.");
-            connectToBroker();
         } catch (IOException e) {
-            e.printStackTrace();  //TODO: handle better?
+            brokerIp = null;
+            System.out.println("[ERROR]: Unable to reach the broker at the given IP, please specify another one.");
+            connectToBroker();
         }
     }
 

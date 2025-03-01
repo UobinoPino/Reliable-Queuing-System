@@ -10,8 +10,12 @@ import java.util.concurrent.Executors;
 
 /// A runnable that will handle the connection-with-clients side of the broker
 public class ClientsConnectionManager implements Runnable {
+    public ClientsConnectionManager(SharedState sharedState) {
+        this.sharedState = sharedState;
+    }
+
     private final ExecutorService clientsManagerExecutor = Executors.newFixedThreadPool(Constants.maxClientsPerBroker);
-    private int nextClientIdAvailable = 0;  //TODO: this will be part of the shared state controlled by the leader
+    private final SharedState sharedState;
 
     @Override
     public void run() {
@@ -22,12 +26,10 @@ public class ClientsConnectionManager implements Runnable {
             while (!clientsEndpoint.isClosed()) {
                 Socket socket = clientsEndpoint.accept();
 
-                clientsManagerExecutor.submit(new ClientHandler(socket, nextClientIdAvailable));
-
-                nextClientIdAvailable++;
+                clientsManagerExecutor.submit(new ClientHandler(socket, sharedState));
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            e.printStackTrace();  //TODO: handle better?
         }
     }
 }

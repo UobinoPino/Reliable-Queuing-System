@@ -6,6 +6,7 @@ import java.util.List;
 /// values which should not be used immediately since the client offsets haven't been updated yet,
 /// but instead should be used after having received a [ReadConfirmation].
 public record ReadResponse(
+        int clientId,
         int operationId,
         List<Integer> values
 ) implements Message {
