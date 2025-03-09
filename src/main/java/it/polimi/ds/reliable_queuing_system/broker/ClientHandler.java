@@ -11,13 +11,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ClientHandler implements Runnable {
-    public ClientHandler(Socket socket, SharedState sharedState) throws IOException {
+    public ClientHandler(Socket socket, int myId, SharedState sharedState) throws IOException {
+        this.myId = myId;
         this.sharedState = sharedState;
         this.toClient = new ObjectOutputStream(socket.getOutputStream());
         toClient.flush();
         this.fromClient = new ObjectInputStream(socket.getInputStream());
     }
 
+    private final int myId;
     private final SharedState sharedState;
     private final ObjectInputStream fromClient;
     private final ObjectOutputStream toClient;
@@ -43,7 +45,8 @@ public class ClientHandler implements Runnable {
             }
             catch (ClassNotFoundException | ClassCastException ignored) {
                 // if a message of unknown type is received simply ignore it
-            } catch (EOFException e) {
+            }
+            catch (EOFException e) {
                 // if the input stream terminates exit the infinite loop (and terminate the thread)
                 break;
             }
@@ -54,24 +57,42 @@ public class ClientHandler implements Runnable {
         }
     }
 
+    /// Returns whether the current broker is the leader broker or not.
+    private boolean isLeader() {
+        return sharedState.isLeader(myId);
+    }
+
+    /// Method to handle [ClientIdRequest] requests`
     private void assignClientId(ClientIdRequest req) throws IOException {
-        toClient.writeObject(new ClientIdAssignment(sharedState.getNewClientId()));
-        toClient.flush();
+        if (isLeader()) {
+            toClient.writeObject(new ClientIdAssignment(sharedState.getNewClientId()));
+            toClient.flush();
+        }
+        else {
+            //TODO: forward the request to the current leader
+            System.out.println("Receiving client id requests from follower brokers is still a WIP");
+        }
     }
 
     private void tmpHandleRead(ReadRequest req) throws IOException {
-        String queueId = req.queueId();
-        List<Integer> values = new ArrayList<>();
-        if (queueId.equals("a")) {
-            values.add(1);
-            values.add(2);
-        }
+        if (isLeader()) {
+            String queueId = req.queueId();
+            List<Integer> values = new ArrayList<>();
+            if (queueId.equals("a")) {
+                values.add(1);
+                values.add(2);
+            }
 
-        toClient.writeObject(new ReadResponse(
-            req.clientId(),
-            req.operationId(),
-            values
-        ));
-        toClient.flush();
+            toClient.writeObject(new ReadResponse(
+                    req.clientId(),
+                    req.operationId(),
+                    values
+            ));
+            toClient.flush();
+        }
+        else {
+            //TODO: forward the request to the current leader
+            System.out.println("Receiving read requests from follower brokers is still a WIP");
+        }
     }
 }

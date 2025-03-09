@@ -14,6 +14,7 @@ import java.util.Scanner;
 public class Client {
     private static final Scanner scanner = new Scanner(System.in);
     private static String brokerIp;
+    private static int brokerPort;
     private static Integer clientId;
     private static Integer nextOperationId = 0;
 
@@ -42,18 +43,30 @@ public class Client {
         scanner.close();
     }
 
-    public static void connectToBroker() {
+    /// Requests the user to input the address of a known broker, and obtains a client id from it.
+    private static void connectToBroker() {
         while (brokerIp == null) {
-            System.out.print("Please enter the IP address of a known broker: ");
-            brokerIp = scanner.nextLine();
+            System.out.print("Please enter the address (<ip>:<port>) of a known broker: ");
+            String brokerAddress = scanner.nextLine();
 
-            requestClientId();
+            requestClientId(brokerAddress);
         }
     }
 
-    public static void requestClientId() {
+    /// Tries to send to the broker at `brokerIp:brokerPort` a [ClientIdRequest], in order to obtain a
+    /// new client id that will be stored in the `clientId` field.
+    private static void requestClientId(String brokerAddress) {
         // open a new socket with the known broker
-        try (Socket socket = new Socket(brokerIp, Constants.clientEndpointPort)) {
+        try {
+            brokerIp = brokerAddress.split(":")[0];
+            brokerPort = Integer.parseInt(brokerAddress.split(":")[1]);
+        } catch (ArrayIndexOutOfBoundsException | NumberFormatException e) {
+            brokerIp = null;
+            System.out.println("[ERROR]: Invalid broker address format. Please specify an address as <ip>:<port>.");
+            return;
+        }
+
+        try (Socket socket = new Socket(brokerIp, brokerPort)) {
             ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
             toBroker.flush();
             ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
@@ -79,13 +92,16 @@ public class Client {
         }
     }
 
+    /// Requests the user to input the id of the queue that should be read,
+    /// then tries to send to the broker at `brokerIp:brokerPort` a [ReadRequest] for it
+    /// and prints the results.
     private static void performRead() {
         // collect the id of the queue to read
         System.out.print("Please insert the id of the queue you want to read from: ");
         String queueId = scanner.nextLine();
 
         // open a socket with the known broker
-        try (Socket socket = new Socket(brokerIp, Constants.clientEndpointPort)) {
+        try (Socket socket = new Socket(brokerIp, brokerPort)) {
             ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
             toBroker.flush();
             ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
@@ -117,7 +133,7 @@ public class Client {
         } catch (IOException e) {
             brokerIp = null;
             System.out.println("[ERROR]: Unable to reach the broker at the given IP, please specify another one.");
-            connectToBroker();
+            connectToBroker();  //FIXME: calling this method like that would give the client a new id and so future reads will not take its offsets into account.
         }
     }
 
