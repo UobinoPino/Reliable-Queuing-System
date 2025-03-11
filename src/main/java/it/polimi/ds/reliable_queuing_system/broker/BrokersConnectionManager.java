@@ -13,7 +13,8 @@ public class BrokersConnectionManager implements Runnable {
 
     @Override
     public void run() {
-        //TODO: implement
+        //UOBINO
+        //TODO: implement : look clientconnection manager
         System.out.println("Broker connection manager is still a WIP.");
     }
 }

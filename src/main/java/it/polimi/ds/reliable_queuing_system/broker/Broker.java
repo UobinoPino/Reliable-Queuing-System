@@ -22,7 +22,8 @@ public class Broker {
             sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
             sharedState.setNewLeaderId(myId);
         } else {
-            //TODO: connect to the other brokers and retrieve the current shared state...
+            // UOBINO
+            //TODO: connect to the other brokers and retrieve the current shared state... : really sends requests (like the one in the client) to the other brokers
             System.out.println("non-first brokers are still a WIP");
             return;
         }
