@@ -21,8 +21,14 @@ public class BrokersConnectionManager implements Runnable {
 
     @Override
     public void run() {
+        // Start the heartbeat thread
+        HeartbeatManager heartbeatManager = new HeartbeatManager(myId, sharedState);
+        Thread hbThread = new Thread(heartbeatManager, "HeartbeatManager-" + myId);
+        hbThread.start();
         try (ServerSocket brokerEndpoint = new ServerSocket(brokersFacingPort)) {
             System.out.println("Broker ready to accept other brokers' connections on port " + brokersFacingPort + "...");
+
+            System.out.println("ip address: " + brokerEndpoint.getInetAddress().getHostAddress());
 
             // Accept connections from other brokers
             while (!brokerEndpoint.isClosed()) {

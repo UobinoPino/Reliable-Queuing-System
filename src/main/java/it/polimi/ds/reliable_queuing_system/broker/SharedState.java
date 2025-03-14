@@ -20,6 +20,13 @@ public class SharedState {
 
     private final List<Message> log = new CopyOnWriteArrayList<>();
 
+    // Track last time we received a heartbeat from the leader
+    private volatile long lastHeartbeatFromLeader = System.currentTimeMillis();
+    // For the leader, track the time of the last ack from each broker
+    private final Map<Integer, Long> lastHeartbeatAckMap = new ConcurrentHashMap<>();
+
+
+
     /// Returns the next client id available for the system
     /// (and increments the counter accordingly).
     public int getNewClientId() {
@@ -88,6 +95,8 @@ public class SharedState {
     /// Sets the id of the current leader broker to the given value.
     public void setNewLeaderId(int leaderId) {
         this.leaderId.set(leaderId);
+
+        lastHeartbeatFromLeader = System.currentTimeMillis();
     }
 
     /// Returns whether the broker with the given id is the leader.
@@ -132,5 +141,54 @@ public class SharedState {
 
         // Update log entries
         this.log.addAll(other.log);
+
+        this.lastHeartbeatFromLeader = System.currentTimeMillis();
     }
+
+    // Called by follower when it receives a heartbeat from the leader
+    public void updateLastHeartbeatReceived(int followerId) {
+        lastHeartbeatFromLeader = System.currentTimeMillis();
+    }
+
+    // Called by the leader when it receives an ack from a follower
+    public void updateLastHeartbeatAckReceived(int followerId) {
+        lastHeartbeatAckMap.put(followerId, System.currentTimeMillis());
+    }
+
+    // Leader checks if followers have timed out
+    public void checkFollowerTimeouts(long heartbeatTimeoutMs) {
+        long now = System.currentTimeMillis();
+        for (Integer brokerId : knownBrokers.keySet()) {
+            if (brokerId == this.getLeaderId()) {
+                continue; // skip self
+            }
+            Long lastAckTime = lastHeartbeatAckMap.get(brokerId);
+            if (lastAckTime == null) {
+                // If we never got an ack, treat as potential failure if enough time has passed
+                lastAckTime = 0L;
+            }
+            long diff = now - lastAckTime;
+            if (diff > heartbeatTimeoutMs) {
+                // Mark broker as removed or handle re-election logic
+                System.out.println("Leader: Broker " + brokerId + " timed out, removing...");
+                removeBrokerAddress(brokerId);
+            }
+        }
+    }
+
+    // Follower checks if the leader has timed out
+    public void checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
+        long now = System.currentTimeMillis();
+        long diff = now - lastHeartbeatFromLeader;
+        if (diff > heartbeatTimeoutMs) {
+            // Follower suspects leader is dead
+            System.out.println("Follower " + myId + ": Leader " + getLeaderId() + " has not sent heartbeat. "
+                    + "Consider leader failed. (No re-election logic here.)");
+        }
+    }
+
+
+
+
+
 }

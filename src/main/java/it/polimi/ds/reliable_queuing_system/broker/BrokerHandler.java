@@ -39,22 +39,29 @@ public class BrokerHandler implements Runnable{
                     case BrokerRemoval brokerRemoval -> handleBrokerRemoval(brokerRemoval);
                     case ClientIdAssignment assignment -> handleClientIdAssignment(assignment);
                     case ClientIdRequest clientIdRequest -> forwardToLeader(clientIdRequest);
-                    /*
-                    case ClientOffsetsUpdate offsetsUpdate -> handleClientOffsetsUpdate(offsetsUpdate);
-                    case EntryCommit commit -> handleEntryCommit(commit);
-                    case EntryPropagation entryPropagation -> handleEntryPropagation(entryPropagation);
-                    case EntryPropagationAck ack -> handleEntryPropagationAck(ack);
-                    case ReadRequest readRequest -> forwardToLeader(readRequest);
+
                     case Heartbeat heartbeat -> handleHeartbeat(heartbeat);
                     case HeartbeatAck heartbeatAck -> handleHeartbeatAck(heartbeatAck);
-                    case NewLeaderAnnouncement announcement -> handleNewLeaderAnnouncement(announcement);
-                    case NewLeaderNomination nomination -> handleNewLeaderNomination(nomination);
-                    case NewLeaderNominationAck nominationAck -> handleNewLeaderNominationAck(nominationAck);
 
+
+                    /*
+
+                    case ReadRequest readRequest -> forwardToLeader(readRequest);
                     case ReadResponse readResponse -> handleReadResponse(readResponse);
                     case ReadConfirmation readConfirmation -> handleReadConfirmation(readConfirmation);
                     case WriteRequest writeRequest -> forwardToLeader(writeRequest);
                     case WriteResponse writeResponse -> handleWriteResponse(writeResponse);
+
+                    case ClientOffsetsUpdate offsetsUpdate -> handleClientOffsetsUpdate(offsetsUpdate);
+                    case EntryCommit commit -> handleEntryCommit(commit);
+                    case EntryPropagation entryPropagation -> handleEntryPropagation(entryPropagation);
+                    case EntryPropagationAck ack -> handleEntryPropagationAck(ack);
+
+                    case NewLeaderAnnouncement announcement -> handleNewLeaderAnnouncement(announcement);
+                    case NewLeaderNomination nomination -> handleNewLeaderNomination(nomination);
+                    case NewLeaderNominationAck nominationAck -> handleNewLeaderNominationAck(nominationAck);
+
+
                     */
                     default -> System.out.println("Unknown message type: Leonardo abbiamo aggiunto altri messaggi?" + msg.getClass().getSimpleName());
 
@@ -231,6 +238,26 @@ public class BrokerHandler implements Runnable{
             }
         }
     }
+
+    private void handleHeartbeat(Heartbeat heartbeat) {
+        // We received a heartbeat. Typically, it's from the leader to a follower.
+        // Update last time the follower saw a heartbeat from the leader.
+        // Then respond with a HeartbeatAck so the leader knows we are alive.
+        sharedState.updateLastHeartbeatReceived(myId);  // track that *this* broker got a heartbeat
+        try {
+            toBroker.writeObject(new HeartbeatAck());
+            toBroker.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void handleHeartbeatAck(HeartbeatAck heartbeatAck) {
+        // This is typically a leader receiving ack from a follower.
+        sharedState.updateLastHeartbeatAckReceived(myId); // leader sees ack from this connection
+    }
+
+
 
 
 

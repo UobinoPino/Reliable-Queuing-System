@@ -27,7 +27,7 @@ public class Broker {
             sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
             sharedState.setNewLeaderId(myId);
         } else {
-            // TODO: Connect to an existing broker to join the system and retrieve the current shared state
+
             Scanner scanner = new Scanner(System.in);
             System.out.print("Please enter the address (<ip>:<port>) of a known broker: ");
             String existingBrokerAddress = scanner.nextLine();
