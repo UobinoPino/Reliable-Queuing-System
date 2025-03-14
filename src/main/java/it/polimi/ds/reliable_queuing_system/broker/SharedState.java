@@ -1,7 +1,6 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.Message;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,32 +21,61 @@ public class SharedState {
     private final List<Message> log = new CopyOnWriteArrayList<>();
 
     /// Returns the next client id available for the system
-    /// (and increment the counter in the SharedState accordingly).
+    /// (and increments the counter accordingly).
     public int getNewClientId() {
         return nextClientIdAvailable.getAndIncrement();
     }
 
-    /// Returns the next client id available for the system
-    /// (and increment the counter in the SharedState accordingly).
+    /// Returns the next broker id available for the system
+    /// (and increments the counter accordingly).
     public int getNewBrokerId() {
         return nextBrokerIdAvailable.getAndIncrement();
     }
 
-    //TODO: add methods to access queues and client offsets
+    // Methods to access and manipulate queues
+
+    /// Returns the queue identified by queueName. If it doesn't exist, a new one is created.
+    public List<Integer> getQueue(String queueName) {
+        return queues.computeIfAbsent(queueName, key -> new CopyOnWriteArrayList<>());
+    }
+
+    /// Adds an item to the queue identified by queueName.
+    public void addToQueue(String queueName, int item) {
+        getQueue(queueName).add(item);
+    }
+
+
+    // Methods to access and manipulate client offsets
+
+    /// Returns the offsets for a given client id.
+    /// If no offsets exist yet, an empty map is created.
+    public Map<String, Integer> getClientOffsets(int clientId) {
+        return clientOffsets.computeIfAbsent(clientId, key -> new ConcurrentHashMap<>());
+    }
+
+    /// Updates the offset for a specific client and queue.
+    public void updateClientOffset(int clientId, String queueName, int newOffset) {
+        getClientOffsets(clientId).put(queueName, newOffset);
+    }
+
+    /// Retrieves the offset for a specific client and queue.
+    /// Returns -1 if no offset is found.
+    public int getClientOffset(int clientId, String queueName) {
+        return getClientOffsets(clientId).getOrDefault(queueName, -1);
+    }
 
     /// Returns the address of the broker matching the given id.
-    /// (Addresses are strings in the form `"<ip>:<port>"`).
+    /// (Addresses are strings in the form "<ip>:<port>").
     public String getBrokerAddress(int brokerId) {
         return knownBrokers.get(brokerId);
     }
 
-    /// Adds a new broker with given id and address to the map of known brokers.
-    /// (Addresses are strings in the form `"<ip>:<port>"`).
+    /// Adds a new broker with given id and address into the known brokers map.
     public void addBrokerAddress(int brokerId, String address) {
         knownBrokers.put(brokerId, address);
     }
 
-    /// Remove a broker and its address from the map of known brokers.
+    /// Removes a broker and its address from the known brokers map.
     public void removeBrokerAddress(int brokerId) {
         knownBrokers.remove(brokerId);
     }
@@ -57,12 +85,12 @@ public class SharedState {
         return leaderId.get();
     }
 
-    /// Sets the id of the current leader broker to the given one.
+    /// Sets the id of the current leader broker to the given value.
     public void setNewLeaderId(int leaderId) {
         this.leaderId.set(leaderId);
     }
 
-    /// Returns whether the broker with the given id is the leader or not.
+    /// Returns whether the broker with the given id is the leader.
     public boolean isLeader(int brokerId) {
         return leaderId.get() == brokerId;
     }
@@ -75,5 +103,34 @@ public class SharedState {
     /// Returns the current length of the broker's log.
     public int getLogLength() {
         return log.size();
+    }
+
+    /// Updates this shared state using data from another SharedState instance.
+    /// Copies over queue contents, client offsets, known brokers, leaderId, and log entries.
+    public void updateFrom(SharedState other) {
+        // Update next available IDs
+        this.nextClientIdAvailable.set(Math.max(this.nextClientIdAvailable.get(), other.nextClientIdAvailable.get()));
+        this.nextBrokerIdAvailable.set(Math.max(this.nextBrokerIdAvailable.get(), other.nextBrokerIdAvailable.get()));
+
+        // Update queues
+        other.queues.forEach((key, list) -> {
+            this.queues.putIfAbsent(key, new CopyOnWriteArrayList<>());
+            this.queues.get(key).addAll(list);
+        });
+
+        // Update client offsets
+        other.clientOffsets.forEach((clientId, offsets) -> {
+            this.clientOffsets.putIfAbsent(clientId, new ConcurrentHashMap<>());
+            this.clientOffsets.get(clientId).putAll(offsets);
+        });
+
+        // Update known brokers
+        this.knownBrokers.putAll(other.knownBrokers);
+
+        // Update leader information
+        this.leaderId.set(other.leaderId.get());
+
+        // Update log entries
+        this.log.addAll(other.log);
     }
 }

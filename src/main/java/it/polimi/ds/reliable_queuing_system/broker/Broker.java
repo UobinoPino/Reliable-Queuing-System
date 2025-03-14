@@ -3,6 +3,11 @@ package it.polimi.ds.reliable_queuing_system.broker;
 import java.util.Arrays;
 import java.util.InputMismatchException;
 import java.util.Scanner;
+import it.polimi.ds.reliable_queuing_system.messages.BrokerJoinRequest;
+import it.polimi.ds.reliable_queuing_system.messages.BrokerJoinResponse;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.Socket;
 
 public class Broker {
     public static void main(String[] args) {
@@ -22,17 +27,64 @@ public class Broker {
             sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
             sharedState.setNewLeaderId(myId);
         } else {
-            // UOBINO
-            //TODO: connect to the other brokers and retrieve the current shared state... : really sends requests (like the one in the client) to the other brokers
-            System.out.println("non-first brokers are still a WIP");
-            return;
+            // TODO: Connect to an existing broker to join the system and retrieve the current shared state
+            Scanner scanner = new Scanner(System.in);
+            System.out.print("Please enter the address (<ip>:<port>) of a known broker: ");
+            String existingBrokerAddress = scanner.nextLine();
+
+            String existingBrokerIp;
+            int existingBrokerPort;
+            try {
+                String[] addressParts = existingBrokerAddress.split(":");
+                if (addressParts.length != 2) {
+                    throw new IllegalArgumentException("Address must be in the format <ip>:<port>");
+                }
+                existingBrokerIp = addressParts[0];
+                existingBrokerPort = Integer.parseInt(addressParts[1]);
+            } catch (Exception e) {
+                System.out.println("Invalid broker address: " + e.getMessage());
+                System.exit(1);
+                return; // This helps the compiler understand the control flow
+            }
+
+            try (Socket socket = new Socket(existingBrokerIp, existingBrokerPort)) {
+                ObjectOutputStream toExistingBroker = new ObjectOutputStream(socket.getOutputStream());
+                toExistingBroker.flush();
+                ObjectInputStream fromExistingBroker = new ObjectInputStream(socket.getInputStream());
+
+                // Send join request
+                toExistingBroker.writeObject(new BrokerJoinRequest(ip, brokersFacingPort));
+                toExistingBroker.flush();
+
+                // Wait for the response with the shared state
+                Object response = fromExistingBroker.readObject();
+                if (!(response instanceof BrokerJoinResponse)) {
+                    System.out.println("Unexpected response from broker. Expected BrokerJoinResponse");
+                    System.exit(1);
+                    return;
+                }
+
+                BrokerJoinResponse joinResponse = (BrokerJoinResponse) response;
+                sharedState = joinResponse.sharedState();
+
+                // Get a new broker ID and register this broker's address
+                myId = sharedState.getNewBrokerId();
+                sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
+
+            } catch (Exception e) {
+                System.out.println("Failed to connect to existing broker: " + e.getMessage());
+                e.printStackTrace();
+                System.exit(1);
+                return;
+            }
+
         }
 
         // start thread that will manage connections with other brokers
         Thread brokersConnectionThread = new Thread(new BrokersConnectionManager(myId, brokersFacingPort, sharedState));
         brokersConnectionThread.start();
 
-        //start thread that will manage connections with the clients
+        // start thread that will manage connections with the clients
         Thread clientsConnectionThread = new Thread(new ClientsConnectionManager(myId, clientsFacingPort, sharedState));
         clientsConnectionThread.start();
     }
@@ -51,24 +103,19 @@ public class Broker {
     /// and returns it.
     private static int getBrokerPort(String prompt) {
         final Scanner scanner = new Scanner(System.in);
-
         int chosenPort = -1;
-        // TODO: check if lower ports are also ok
         while (chosenPort < 49152 || chosenPort > 65535) {
             System.out.print(prompt);
-
             try {
                 chosenPort = scanner.nextInt();
             } catch (InputMismatchException e) {
                 scanner.nextLine();
                 chosenPort = -1;
             }
-
             if (chosenPort < 49152 || chosenPort > 65535) {
                 System.out.println("Invalid port. Please insert a number between 49152 and 65535.");
             }
         }
-
         return chosenPort;
     }
 }

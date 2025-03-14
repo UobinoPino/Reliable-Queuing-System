@@ -31,7 +31,7 @@ public class BrokerHandler implements Runnable{
                 }
                 //mega switch
                 switch (msg) {
-                    /*
+
                     case BrokerAddition brokerAddition -> handleBrokerAddition(brokerAddition);
                     case BrokerAdditionAck brokerAdditionAck -> handleBrokerAdditionAck(brokerAdditionAck);
                     case BrokerJoinRequest joinRequest -> handleBrokerJoinRequest(joinRequest);
@@ -39,6 +39,7 @@ public class BrokerHandler implements Runnable{
                     case BrokerRemoval brokerRemoval -> handleBrokerRemoval(brokerRemoval);
                     case ClientIdAssignment assignment -> handleClientIdAssignment(assignment);
                     case ClientIdRequest clientIdRequest -> forwardToLeader(clientIdRequest);
+                    /*
                     case ClientOffsetsUpdate offsetsUpdate -> handleClientOffsetsUpdate(offsetsUpdate);
                     case EntryCommit commit -> handleEntryCommit(commit);
                     case EntryPropagation entryPropagation -> handleEntryPropagation(entryPropagation);
@@ -69,6 +70,164 @@ public class BrokerHandler implements Runnable{
             catch (IOException e) {
                 e.printStackTrace();
                 break;
+            }
+        }
+    }
+    private void handleBrokerAddition(BrokerAddition brokerAddition) {
+        // Update the shared state to include the new broker's information
+        sharedState.addBrokerAddress(brokerAddition.brokerId(),
+                brokerAddition.brokerIp() + ":" + brokerAddition.brokerPort());
+
+        try {
+            // Send acknowledgment back
+            toBroker.writeObject(new BrokerAdditionAck(brokerAddition.brokerId()));
+            toBroker.flush();
+        } catch (IOException e) {
+            System.out.println("Failed to send BrokerAdditionAck: " + e.getMessage());
+        }
+    }
+
+    private void handleBrokerAdditionAck(BrokerAdditionAck brokerAdditionAck) {
+        // Record that a broker has acknowledged the addition
+        System.out.println("Received acknowledgment for broker addition: " + brokerAdditionAck.brokerId());
+
+    }
+
+    private void handleBrokerJoinRequest(BrokerJoinRequest joinRequest) {
+        if (sharedState.isLeader(myId)) {
+            // This broker is the leader, handle the join request directly
+            try {
+                // Assign a new broker ID
+                int newBrokerId = sharedState.getNewBrokerId();
+
+                // Add broker to shared state
+                sharedState.addBrokerAddress(newBrokerId,
+                        joinRequest.brokerIp() + ":" + joinRequest.brokerPort());
+
+                // Send shared state back to the joining broker
+                toBroker.writeObject(new BrokerJoinResponse(sharedState));
+                toBroker.flush();
+
+                // Notify other followers about the new broker
+                notifyFollowersAboutNewBroker(joinRequest.brokerIp(), joinRequest.brokerPort(), newBrokerId);
+
+            } catch (IOException e) {
+                System.out.println("Failed to handle broker join request: " + e.getMessage());
+            }
+        } else {
+            // Not the leader, forward to the leader
+            forwardToLeader(joinRequest);
+        }
+    }
+
+    private void handleBrokerJoinResponse(BrokerJoinResponse joinResponse) {
+        // Update local shared state with the received state
+        sharedState.updateFrom(joinResponse.sharedState());
+        System.out.println("Updated shared state from leader's response");
+    }
+
+    private void handleBrokerRemoval(BrokerRemoval brokerRemoval) {
+        // Remove the broker from shared state
+        sharedState.removeBrokerAddress(brokerRemoval.brokerId());
+        System.out.println("Broker " + brokerRemoval.brokerId() + " has been removed from the system");
+    }
+
+    private void handleClientIdAssignment(ClientIdAssignment assignment) {
+        // This is  forwarded to the client
+        // In this handler, it's likely received from the leader to be forwarded to a client
+        System.out.println("Received client ID assignment: " + assignment.clientId());
+        //TODO: code the actual method
+    }
+
+    private void forwardToLeader(Message message) {
+        try {
+            // Get leader's address
+            int leaderId = sharedState.getLeaderId();
+            String leaderAddress = sharedState.getBrokerAddress(leaderId);
+
+            if (leaderAddress != null) {
+                String[] addressParts = leaderAddress.split(":");
+                String leaderIp = addressParts[0];
+                int leaderPort = Integer.parseInt(addressParts[1]);
+
+                // Connect to leader
+                try (Socket leaderSocket = new Socket(leaderIp, leaderPort)) {
+                    ObjectOutputStream toLeader = new ObjectOutputStream(leaderSocket.getOutputStream());
+                    toLeader.flush();
+                    ObjectInputStream fromLeader = new ObjectInputStream(leaderSocket.getInputStream());
+
+                    // Forward the message
+                    toLeader.writeObject(message);
+                    toLeader.flush();
+
+                    // Handle the response based on the message type
+                    if (message instanceof BrokerJoinRequest) {
+                        // For BrokerJoinRequest, we expect a BrokerJoinResponse
+                        Object response = fromLeader.readObject();
+                        if (response instanceof BrokerJoinResponse joinResponse) {
+                            // Update our shared state with the leader's response
+                            sharedState.updateFrom(joinResponse.sharedState());
+
+                            // Forward the response back to the original broker
+                            toBroker.writeObject(joinResponse);
+                            toBroker.flush();
+                        } else {
+                            System.out.println("Unexpected response from leader for BrokerJoinRequest");
+                        }
+                    } else if (message instanceof ClientIdRequest) {
+                        // For ClientIdRequest, we expect a ClientIdAssignment
+                        Object response = fromLeader.readObject();
+                        if (response instanceof ClientIdAssignment assignment) {
+                            // Forward the client ID assignment back to the requesting client
+                            toBroker.writeObject(assignment);
+                            toBroker.flush();
+                        } else {
+                            System.out.println("Unexpected response from leader for ClientIdRequest");
+                        }
+                    }
+                    // Additional message types can be handled here as needed
+                } catch (ClassNotFoundException e) {
+                    System.out.println("Error reading response from leader: " + e.getMessage());
+                }
+            } else {
+                System.out.println("Leader address not found in shared state");
+            }
+        } catch (IOException e) {
+            System.out.println("Failed to forward message to leader: " + e.getMessage());
+        }
+    }
+
+    // Helper method to notify all followers about a new broker
+    private void notifyFollowersAboutNewBroker(String brokerIp, int brokerPort, int brokerId) {
+        // Iterate through all broker IDs first to get all known brokers
+        for (int i = 0; i < sharedState.getNewBrokerId(); i++) {
+            // Skip self and the new broker
+            if (i == myId || i == brokerId) {
+                continue;
+            }
+
+            // Get the address for this broker ID
+            String address = sharedState.getBrokerAddress(i);
+            if (address == null) {
+                continue; // This broker ID might no longer exist
+            }
+
+            try {
+                String[] addressParts = address.split(":");
+                String followerIp = addressParts[0];
+                int followerPort = Integer.parseInt(addressParts[1]);
+
+                try (Socket followerSocket = new Socket(followerIp, followerPort)) {
+                    ObjectOutputStream toFollower = new ObjectOutputStream(followerSocket.getOutputStream());
+                    toFollower.flush();
+
+                    // Send notification about new broker
+                    toFollower.writeObject(new BrokerAddition(brokerIp, brokerPort, brokerId));
+                    toFollower.flush();
+
+                }
+            } catch (IOException e) {
+                System.out.println("Failed to notify follower " + i + ": " + e.getMessage());
             }
         }
     }
