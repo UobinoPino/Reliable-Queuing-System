@@ -31,7 +31,7 @@ public class HeartbeatManager implements Runnable {
             try {
                 if (sharedState.isLeader(myId)) {
                     // Leader -> send heartbeat to all other brokers
-                    int totalBrokersAssigned = sharedState.getNewBrokerId();
+                    int totalBrokersAssigned = sharedState.getBrokersCount();
                     for (int brokerId = 0; brokerId < totalBrokersAssigned; brokerId++) {
                         if (brokerId == myId) {
                             continue;

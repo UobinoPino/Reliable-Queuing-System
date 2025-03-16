@@ -112,12 +112,13 @@ public class BrokerHandler implements Runnable{
                         joinRequest.brokerIp() + ":" + joinRequest.brokerPort());
 
                 // Send shared state back to the joining broker
-                toBroker.writeObject(new BrokerJoinResponse(sharedState));
+                // TODO: maybe better to wait for at least one BrokerAdditionAck before sending the JoinResponse?
+                //  otherwise those acks are useless (?) Idk
+                toBroker.writeObject(new BrokerJoinResponse(newBrokerId, sharedState));
                 toBroker.flush();
 
                 // Notify other followers about the new broker
                 notifyFollowersAboutNewBroker(joinRequest.brokerIp(), joinRequest.brokerPort(), newBrokerId);
-
             } catch (IOException e) {
                 System.out.println("Failed to handle broker join request: " + e.getMessage());
             }
@@ -173,6 +174,7 @@ public class BrokerHandler implements Runnable{
                         Object response = fromLeader.readObject();
                         if (response instanceof BrokerJoinResponse joinResponse) {
                             // Update our shared state with the leader's response
+                            // TODO: maybe not needed? since all followers already updated their state after receiving BrokerAddition message? But I'm not sure
                             sharedState.updateFrom(joinResponse.sharedState());
 
                             // Forward the response back to the original broker

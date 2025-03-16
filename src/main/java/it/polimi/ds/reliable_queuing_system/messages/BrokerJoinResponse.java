@@ -6,6 +6,7 @@ import it.polimi.ds.reliable_queuing_system.broker.SharedState;
 /// originally contacted) to confirm the entrance in the system and provide the current
 /// replicated state.
 public record BrokerJoinResponse(
+        Integer newBrokerId,
         SharedState sharedState
 ) implements Message {
 }

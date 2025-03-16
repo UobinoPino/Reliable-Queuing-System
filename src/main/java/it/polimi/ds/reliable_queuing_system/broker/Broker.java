@@ -27,7 +27,6 @@ public class Broker {
             sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
             sharedState.setNewLeaderId(myId);
         } else {
-
             Scanner scanner = new Scanner(System.in);
             System.out.print("Please enter the address (<ip>:<port>) of a known broker: ");
             String existingBrokerAddress = scanner.nextLine();
@@ -65,11 +64,12 @@ public class Broker {
                 }
 
                 BrokerJoinResponse joinResponse = (BrokerJoinResponse) response;
+                myId = joinResponse.newBrokerId();
                 sharedState = joinResponse.sharedState();
 
-                // Get a new broker ID and register this broker's address
-                myId = sharedState.getNewBrokerId();
-                sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
+                // Register this broker's address
+                //TODO: not needed? (the leader already added the new broker to the list before returning the sharedState)
+//                sharedState.addBrokerAddress(myId, ip + ":" + brokersFacingPort);
 
             } catch (Exception e) {
                 System.out.println("Failed to connect to existing broker: " + e.getMessage());

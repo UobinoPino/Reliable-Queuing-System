@@ -71,6 +71,11 @@ public class SharedState {
         return getClientOffsets(clientId).getOrDefault(queueName, -1);
     }
 
+    /// Returns the number of brokers currently connected.
+    public int getBrokersCount() {
+        return knownBrokers.size();
+    }
+
     /// Returns the address of the broker matching the given id.
     /// (Addresses are strings in the form "<ip>:<port>").
     public String getBrokerAddress(int brokerId) {
@@ -159,7 +164,7 @@ public class SharedState {
     public void checkFollowerTimeouts(long heartbeatTimeoutMs) {
         long now = System.currentTimeMillis();
         for (Integer brokerId : knownBrokers.keySet()) {
-            if (brokerId == this.getLeaderId()) {
+            if (brokerId.equals(this.getLeaderId())) {
                 continue; // skip self
             }
             Long lastAckTime = lastHeartbeatAckMap.get(brokerId);
