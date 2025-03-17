@@ -1,24 +1,29 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
-import it.polimi.ds.reliable_queuing_system.messages.Message;
-import java.util.List;
-import java.util.Map;
+import it.polimi.ds.reliable_queuing_system.utils.Address;
+import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
+
+import java.io.Serializable;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /// A class that contains the state replicated over all the brokers.
-public class SharedState {
+public class SharedState implements Serializable {
     private final AtomicInteger nextClientIdAvailable = new AtomicInteger(0);
     private final AtomicInteger nextBrokerIdAvailable = new AtomicInteger(0);
 
     private final Map<String, List<Integer>> queues = new ConcurrentHashMap<>();
     private final Map<Integer, Map<String, Integer>> clientOffsets = new ConcurrentHashMap<>();
 
-    private final Map<Integer, String> knownBrokers = new ConcurrentHashMap<>();
+    private final Map<Integer, Address> knownBrokers = new ConcurrentHashMap<>();
     private final AtomicInteger leaderId = new AtomicInteger();
 
-    private final List<Message> log = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> waitingAckEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> waitingCommitEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> log = new CopyOnWriteArrayList<>();
 
     // Track last time we received a heartbeat from the leader
     private volatile long lastHeartbeatFromLeader = System.currentTimeMillis();
@@ -66,9 +71,9 @@ public class SharedState {
     }
 
     /// Retrieves the offset for a specific client and queue.
-    /// Returns -1 if no offset is found.
+    /// Returns 0 if no offset is found (so that the clients starts to read from the beginning).
     public int getClientOffset(int clientId, String queueName) {
-        return getClientOffsets(clientId).getOrDefault(queueName, -1);
+        return getClientOffsets(clientId).getOrDefault(queueName, 0);
     }
 
     /// Returns the number of brokers currently connected.
@@ -77,13 +82,16 @@ public class SharedState {
     }
 
     /// Returns the address of the broker matching the given id.
-    /// (Addresses are strings in the form "<ip>:<port>").
-    public String getBrokerAddress(int brokerId) {
+    public Address getBrokerAddress(int brokerId) {
         return knownBrokers.get(brokerId);
     }
 
+    public Map<Integer, Address> getBrokerAddresses() {
+        return new HashMap<>(knownBrokers);
+    }
+
     /// Adds a new broker with given id and address into the known brokers map.
-    public void addBrokerAddress(int brokerId, String address) {
+    public void addBrokerAddress(int brokerId, Address address) {
         knownBrokers.put(brokerId, address);
     }
 
@@ -109,9 +117,61 @@ public class SharedState {
         return leaderId.get() == brokerId;
     }
 
-    /// Appends a new message to the broker's log.
-    public void addLogEntry(Message message) {
-        log.add(message);
+    /// Adds a new [LogEntry] to the list of entries waiting for an ack.
+    public void addWaitingAckEntry(LogEntry logEntry) {
+        waitingAckEntries.add(logEntry);
+    }
+
+    /// Adds a new [LogEntry] to the list of entries waiting for the commit.
+    public void addWaitingCommitEntry(LogEntry logEntry) {
+        waitingCommitEntries.add(logEntry);
+    }
+
+    public boolean isEntryWaitingAck(LogEntry logEntry) {
+        return waitingAckEntries.contains(logEntry);
+    }
+
+    /// TODO: write javadoc
+    public void commitEntry(LogEntry logEntry) {
+        //TODO: is it ok to call indexOf directly on the object?
+        // Or are they different objects if they have been passed through the network?
+
+        // remove the given entry from the waiting list it's currently in (if any)
+        int waitingAckPos = waitingAckEntries.indexOf(logEntry);
+        int waitingCommitPos = waitingCommitEntries.indexOf(logEntry);
+        int pendingPos = pendingEntries.indexOf(logEntry);
+        if (waitingAckPos >= 0) {
+            waitingAckEntries.remove(logEntry);
+        } else if (waitingCommitPos >= 0) {
+            waitingCommitEntries.remove(logEntry);
+        } else if (pendingPos >= 0) {
+            pendingEntries.remove(logEntry);
+        } else if (log.contains(logEntry)) {
+            return;  // entry already committed, no need to do anything else
+        }
+
+        // if the given entry can be directly added to log...
+        if (logEntry.index() == log.size()) {
+            // add it
+            log.add(logEntry);
+
+            // and also add all the other pending entries that were waiting for it
+            pendingEntries.sort(Comparator.comparingInt(LogEntry::index));
+            for (LogEntry entry : pendingEntries) {
+                if (entry.index() == log.size()) {
+                    pendingEntries.remove(entry);
+                    log.add(entry);
+                }
+            }
+        }
+        // else...
+        else {
+            // add it to the pending list
+            pendingEntries.add(logEntry);
+        }
+
+
+        //FIXME: what happens if there are multiple entries with the same index?
     }
 
     /// Returns the current length of the broker's log.
@@ -191,9 +251,5 @@ public class SharedState {
                     + "Consider leader failed. (No re-election logic here.)");
         }
     }
-
-
-
-
 
 }

@@ -1,143 +1,266 @@
 package it.polimi.ds.reliable_queuing_system.client;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
-import it.polimi.ds.reliable_queuing_system.utils.Constants;
+import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.List;
-import java.util.Scanner;
+import java.util.*;
 
-/// An executable class representing a client.
 public class Client {
     private static final Scanner scanner = new Scanner(System.in);
-    private static String brokerIp;
-    private static int brokerPort;
+
+    private static Address clientAddress;
+
+    private static Address brokerAddress;
+
     private static Integer clientId;
     private static Integer nextOperationId = 0;
 
-    public static void main(String[] args) {
+    private static List<Integer> pendingReadValues;
+    private static ClientState clientState = ClientState.READY;
+
+    public static void main(String[] args) throws InterruptedException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: CLIENT ========");
 
-        connectToBroker();
+        // ask user to choose port
+        String clientIp = obtainClientIp();
+        int clientPort = obtainClientPort();
+        clientAddress = new Address(clientIp, clientPort);
 
-        String input;
+        // obtain known broker addr
+        brokerAddress = obtainKnownBrokerAddress();
+
+        // start thread to wait for incoming messages
+        Thread messagesIngressThread = new Thread(Client::incomingMessagesListener);
+        messagesIngressThread.start();
+        Thread.sleep(500);  //TODO: maybe unnecessary?
+
+        // request client id
+        requestClientId();
+
+        // enter TUI loop
+        String input = "";
         do {
-            System.out.println("\nWhat do you want to do?");
-            System.out.println("\tr) Read the new values from a queue");
-            System.out.println("\tw) Write a new value in a queue");
-            System.out.println("\tq) Quit the application");
-            input = scanner.nextLine();
+            if (clientState == ClientState.READY) {
+                System.out.println("\nWhat do you want to do?");
+                System.out.println("\tr) Read the new values from a queue");
+                System.out.println("\tw) Write a new value in a queue");
+                System.out.println("\tq) Quit the application");
+                input = scanner.nextLine();
 
-            switch (input.toLowerCase()) {
-                case "r" -> performRead();
-                case "w" -> performWrite();
-                case "q" -> { }
-                default -> System.out.println("[ERROR]: Invalid command. Please enter either 'r', 'w' or 'q'");
+                switch (input.toLowerCase()) {
+                    case "r" -> performRead();
+                    case "w" -> performWrite();
+                    case "q" -> {
+                        System.exit(0);
+                    }
+                    default -> System.out.println("[ERROR]: Invalid command. Please enter either 'r', 'w' or 'q'");
+                }
             }
         } while (!input.equalsIgnoreCase("q"));
-
-        System.out.println("Goodbye");
-        scanner.close();
     }
 
-    /// Requests the user to input the address of a known broker, and obtains a client id from it.
-    private static void connectToBroker() {
-        while (brokerIp == null) {
-            System.out.print("Please enter the address (<ip>:<port>) of a known broker: ");
-            String brokerAddress = scanner.nextLine();
 
-            requestClientId(brokerAddress);
-        }
-    }
+    //region UTILITY FUNCTIONS
 
-    /// Tries to send to the broker at `brokerIp:brokerPort` a [ClientIdRequest], in order to obtain a
-    /// new client id that will be stored in the `clientId` field.
-    private static void requestClientId(String brokerAddress) {
-        // open a new socket with the known broker
+    private static String obtainClientIp() {
         try {
-            brokerIp = brokerAddress.split(":")[0];
-            brokerPort = Integer.parseInt(brokerAddress.split(":")[1]);
-        } catch (ArrayIndexOutOfBoundsException | NumberFormatException e) {
-            brokerIp = null;
-            System.out.println("[ERROR]: Invalid broker address format. Please specify an address as <ip>:<port>.");
-            return;
+            return java.net.InetAddress.getLocalHost().getHostAddress();
+        } catch (java.net.UnknownHostException e) {
+            return "127.0.0.1"; // Default to localhost if unable to determine
+        }
+    }
+
+    private static Integer obtainClientPort() {
+        Integer port = null;
+        while (port == null) {
+            System.out.print("Enter the port the client should listen to: ");
+            try {
+                int input = scanner.nextInt();
+                scanner.nextLine();
+                if (input < 1024 || input > 65535) {
+                    System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
+                } else {
+                    port = input;
+                }
+            } catch (InputMismatchException e) {
+                System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
+            }
         }
 
-        try (Socket socket = new Socket(brokerIp, brokerPort)) {
-            ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
-            toBroker.flush();
-            ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
+        return port;
+    }
 
-            // request a new ID to the broker
-            toBroker.writeObject(new ClientIdRequest());
-            toBroker.flush();
-
-            // wait for the broker to reply with an id
-            while (clientId == null) {
+    private static Address obtainKnownBrokerAddress() {
+        String[] addr = null;
+        while (addr == null) {
+            System.out.print("Enter the address of a known broker (<ip>:<port>): ");
+            String input = scanner.nextLine();
+            String[] parts = input.split(":");
+            if (parts.length != 2) {
+                System.out.println("[ERROR]: Invalid address. Please specify a valid IP address with the format <ip>:<port>.");
+            }
+            else {
                 try {
-                    Message res = (Message) fromBroker.readObject();
-                    if (res instanceof ClientIdAssignment assignment) {
-                        clientId = assignment.clientId();
+                    int port = Integer.parseInt(parts[1]);
+                    if (port < 1024 || port > 65535) {
+                        System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
+                    }
+                    else {
+                        addr = parts;
+                    }
+                } catch (NumberFormatException e) {
+                    System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
+                }
+            }
+        }
+
+        return new Address(addr[0], Integer.parseInt(addr[1]));
+    }
+
+    //endregion
+
+
+    //region MESSAGE HANDLING FUNCTIONS
+
+    private static void incomingMessagesListener() {
+        try(ServerSocket serverSocket = new ServerSocket(clientAddress.port())) {
+            System.out.println("Client ready to receive messages from brokers at port: " + clientAddress.port());
+
+            while (!serverSocket.isClosed()) {
+                Socket socket = serverSocket.accept();
+                ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+
+                try {
+                    Message message = (Message) in.readObject();
+
+                    switch (message) {
+                        case ClientIdAssignment msg -> handleClientIdAssignment(msg);
+                        case ReadResponse msg -> handleReadResponse(msg);
+                        case ReadConfirmation msg -> handleReadConfirmation(msg);
+                        case WriteResponse msg -> handleWriteResponse(msg);
+                        default -> throw new ClassNotFoundException();
                     }
                 } catch (ClassNotFoundException | ClassCastException ignored) {
-                    System.out.println("[WARN]: Unknown message received, it will be ignored.");
+                    System.out.println("[INFO]: Unknown message received, it will be ignored.");
                 }
             }
         } catch (IOException e) {
-            brokerIp = null;
-            System.out.println("[ERROR]: Unable to reach the broker at the given IP, please specify another one.");
+            System.out.println("[FATAL ERROR]: " + e.getMessage());
+            System.exit(1);
         }
     }
 
-    /// Requests the user to input the id of the queue that should be read,
-    /// then tries to send to the broker at `brokerIp:brokerPort` a [ReadRequest] for it
-    /// and prints the results.
+    private static void handleClientIdAssignment(ClientIdAssignment msg) {
+        if (clientState == ClientState.WAITING_ID) {
+            System.out.println("[INFO]: Obtained new client ID: " + msg.clientId());
+
+            clientId = msg.clientId();
+            clientState = ClientState.READY;
+        } else {
+            System.out.println("[INFO]: Unexpected ClientIdAssignment message received.");
+        }
+    }
+
+    private static void handleReadResponse(ReadResponse msg) {
+        if (clientState == ClientState.WAITING_READ) {
+            System.out.println("[INFO]: Read response received. Waiting for confirmation message.");
+
+            pendingReadValues = msg.values();
+        } else {
+            System.out.println("[INFO]: Unexpected ReadResponse message received.");
+        }
+    }
+
+    private static void handleReadConfirmation(ReadConfirmation msg) {
+        if (clientState == ClientState.WAITING_READ && pendingReadValues != null) {
+            if (pendingReadValues.isEmpty()) {
+                System.out.println("No new values has been added to queue since last reading.");
+            } else {
+                System.out.println("New values in queue have been found: " + pendingReadValues);
+            }
+            pendingReadValues = null;
+            clientState = ClientState.READY;
+        } else {
+            System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
+        }
+    }
+
+    private static void handleWriteResponse(WriteResponse msg) {
+        if (clientState == ClientState.WAITING_WRITE) {
+            System.out.println("New value appended to the queue successfully.");
+            clientState = ClientState.READY;
+        } else {
+            System.out.println("[INFO]: Unexpected WriteResponse message received.");
+        }
+    }
+
+    //endregion
+
+
+    //region USER ACTIONS FUNCTIONS
+
+    private static void requestClientId() {
+        boolean requestSent = false;
+        while (!requestSent) {
+            try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+                ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
+                toBroker.writeObject(new ClientIdRequest(clientAddress));
+                toBroker.flush();
+
+                clientState = ClientState.WAITING_ID;
+                requestSent = true;
+
+                //TODO: maybe start a timeout to retry if the request gets lost?
+            } catch (IOException e) {
+                System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
+                brokerAddress = obtainKnownBrokerAddress();
+            }
+        }
+    }
+
     private static void performRead() {
         // collect the id of the queue to read
         System.out.print("Please insert the id of the queue you want to read from: ");
         String queueId = scanner.nextLine();
 
-        // open a socket with the known broker
-        try (Socket socket = new Socket(brokerIp, brokerPort)) {
-            ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
-            toBroker.flush();
-            ObjectInputStream fromBroker = new ObjectInputStream(socket.getInputStream());
+        try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+            out.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
+            out.flush();
 
-            // send a read request to the broker
-            toBroker.writeObject(new ReadRequest(queueId, clientId, nextOperationId++));
-            toBroker.flush();
-
-            // wait for the broker to reply
-            socket.setSoTimeout(Constants.maxWaitForBrokerResponse);
-            List<Integer> queueValues = null;
-            while (queueValues == null) {
-                try {
-                    Message res = (Message) fromBroker.readObject();
-                    if (res instanceof ReadResponse readResponse) {
-                        queueValues = readResponse.values();
-                    }
-                } catch (ClassNotFoundException | ClassCastException ignored) {
-                    System.out.println("[WARN]: Unknown message received, it will be ignored.");
-                }
-            }
-
-            // print the new values of the read queue
-            if (queueValues.isEmpty()) {
-                System.out.println("No new values has been added to queue '" + queueId + "' since last reading.");
-            } else {
-                System.out.println("New values in queue '" + queueId + "' has been found: " + queueValues);
-            }
+            clientState = ClientState.WAITING_READ;
         } catch (IOException e) {
-            brokerIp = null;
-            System.out.println("[ERROR]: Unable to reach the broker at the given IP, please specify another one.");
-            connectToBroker();  //FIXME: calling this method like that would give the client a new id and so future reads will not take its offsets into account.
+            System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
+            brokerAddress = obtainKnownBrokerAddress();
         }
     }
 
     private static void performWrite() {
-        //TODO: implement
+        // collect the id of the queue to write on
+        System.out.print("Please insert the id of the queue you want to write on: ");
+        String queueId = scanner.nextLine();
+
+        // obtain the value to be added to the queue
+        System.out.print("Please insert the new value you want to append to the queue: ");
+        int newValue = scanner.nextInt();
+        scanner.nextLine();
+
+        try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+            out.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
+            out.flush();
+
+            clientState = ClientState.WAITING_WRITE;
+        } catch (IOException e) {
+            System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
+            brokerAddress = obtainKnownBrokerAddress();
+        }
     }
+
+    //endregion
 }
