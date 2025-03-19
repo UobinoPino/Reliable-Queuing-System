@@ -23,6 +23,12 @@ public class Broker {
 
     private static BrokerState brokerState;
 
+    private static final long HEARTBEAT_INTERVAL_MS = 500; // 5 seconds
+    private static final long HEARTBEAT_TIMEOUT_MS = 1500; // 15 seconds
+
+    private static Thread heartbeatSenderThread;
+    private static Thread heartbeatMonitorThread;
+
     public static void main(String[] args) {
         System.out.println("======== RELIABLE QUEUING SYSTEM: BROKER ========");
 
@@ -37,6 +43,9 @@ public class Broker {
             brokerId = sharedState.getNewBrokerId();
             sharedState.addBrokerAddress(brokerId, brokerAddress);
             sharedState.setNewLeaderId(brokerId);
+
+            // Start heartbeat mechanism for the leader
+            startHeartbeatMechanism();
         }
         else {
             // ask the user to specify the address of a known broker
@@ -71,6 +80,9 @@ public class Broker {
                             brokerId = brokerJoinResponse.newBrokerId();
                             sharedState = brokerJoinResponse.sharedState();
                             brokerState = BrokerState.READY;
+
+                            // Start heartbeat mechanism
+                            startHeartbeatMechanism();
                         }
                         else {
                             System.out.println("[INFO]: Received message before joining the cluster. It will be ignored.");
@@ -86,9 +98,9 @@ public class Broker {
                             case ReadRequest msg -> handleReadRequest(msg);
                             case ClientOffsetsUpdate msg -> handleClientOffsetsUpdate(msg);
                             case WriteRequest msg -> handleWriteRequest(msg);
+                            case Heartbeat msg -> handleHeartbeat(msg);
+                            case HeartbeatAck msg -> handleHeartbeatAck(msg);
                             //TODO: implement and uncomment the following:
-//                            case Heartbeat msg -> handleHeartbeat(msg);
-//                            case HeartbeatAck msg -> handleHeartbeatAck(msg);
 //                            case BrokerRemoval msg -> handleBrokerRemoval(msg);
 //                            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
 //                            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
@@ -361,6 +373,98 @@ public class Broker {
         else {
             forwardMessageToLeader(msg);
         }
+    }
+
+    private static void handleHeartbeat(Heartbeat heartbeat) {
+        System.out.println("[INFO]: Received heartbeat from leader");
+
+        // Update timestamp in shared state
+        sharedState.updateLastHeartbeatReceived(brokerId);
+
+        try {
+            // Identify which broker sent the heartbeat
+            Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
+            sendMessage(leaderAddr, new HeartbeatAck(brokerId));  // Include our broker ID in the ack
+        } catch (Exception e) {
+            System.out.println("[ERROR]: Failed to send heartbeat acknowledgment: " + e.getMessage());
+        }
+    }
+
+    private static void handleHeartbeatAck(HeartbeatAck heartbeatAck) {
+        if (isLeader()) {
+            Integer followerId = heartbeatAck.brokerId();
+            if (followerId != null) {
+                sharedState.updateLastHeartbeatAckReceived(followerId);
+                System.out.println("[INFO]: Received heartbeat acknowledgment from broker " + followerId);
+            } else {
+                System.out.println("[WARNING]: Received heartbeat acknowledgment without broker ID");
+            }
+        }
+    }
+
+    private static void startHeartbeatMechanism() {
+        stopHeartbeatThreads();
+
+        if (isLeader()) {
+            startHeartbeatSender();
+        } else {
+            startHeartbeatMonitor();
+        }
+    }
+
+    private static void stopHeartbeatThreads() {
+        if (heartbeatSenderThread != null) {
+            heartbeatSenderThread.interrupt();
+        }
+        if (heartbeatMonitorThread != null) {
+            heartbeatMonitorThread.interrupt();
+        }
+    }
+
+    private static void startHeartbeatSender() {
+        heartbeatSenderThread = new Thread(() -> {
+            try {
+                while (!Thread.interrupted()) {
+                    // Send heartbeat to all followers
+                    Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+                    for (Integer id : brokerAddresses.keySet()) {
+                        if (!id.equals(brokerId)) {
+                            try {
+                                sendMessage(brokerAddresses.get(id), new Heartbeat());
+                            } catch (Exception e) {
+                                System.out.println("[WARNING]: Failed to send heartbeat to broker " + id);
+                            }
+                        }
+                    }
+
+                    // Check for follower timeouts
+                    sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+
+                    Thread.sleep(HEARTBEAT_INTERVAL_MS);
+                }
+            } catch (InterruptedException e) {
+                // Exit gracefully
+            }
+        });
+        heartbeatSenderThread.setDaemon(true);
+        heartbeatSenderThread.start();
+    }
+
+    private static void startHeartbeatMonitor() {
+        heartbeatMonitorThread = new Thread(() -> {
+            try {
+                while (!Thread.interrupted()) {
+                    // Check if leader has timed out
+                    sharedState.checkLeaderTimeout(brokerId, HEARTBEAT_TIMEOUT_MS);
+
+                    Thread.sleep(HEARTBEAT_TIMEOUT_MS / 3);
+                }
+            } catch (InterruptedException e) {
+                // Exit gracefully
+            }
+        });
+        heartbeatMonitorThread.setDaemon(true);
+        heartbeatMonitorThread.start();
     }
 
     //endregion

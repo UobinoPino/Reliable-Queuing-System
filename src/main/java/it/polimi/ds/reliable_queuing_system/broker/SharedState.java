@@ -29,6 +29,9 @@ public class SharedState implements Serializable {
     private volatile long lastHeartbeatFromLeader = System.currentTimeMillis();
     // For the leader, track the time of the last ack from each broker
     private final Map<Integer, Long> lastHeartbeatAckMap = new ConcurrentHashMap<>();
+    // Add this field to the SharedState class
+    private final Map<Integer, Integer> missedHeartbeats = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> missedLeaderHeartbeats = new ConcurrentHashMap<>();
 
 
 
@@ -131,7 +134,7 @@ public class SharedState implements Serializable {
         return waitingAckEntries.contains(logEntry);
     }
 
-    /// TODO: write javadoc
+
     public void commitEntry(LogEntry logEntry) {
         //TODO: is it ok to call indexOf directly on the object?
         // Or are they different objects if they have been passed through the network?
@@ -213,11 +216,15 @@ public class SharedState implements Serializable {
     // Called by follower when it receives a heartbeat from the leader
     public void updateLastHeartbeatReceived(int followerId) {
         lastHeartbeatFromLeader = System.currentTimeMillis();
+        // Reset missed heartbeats counter when we receive a heartbeat
+        missedLeaderHeartbeats.put(followerId, 0);
     }
 
     // Called by the leader when it receives an ack from a follower
     public void updateLastHeartbeatAckReceived(int followerId) {
         lastHeartbeatAckMap.put(followerId, System.currentTimeMillis());
+        // Reset missed heartbeats counter when we receive an ack
+        missedHeartbeats.put(followerId, 0);
     }
 
     // Leader checks if followers have timed out
@@ -233,10 +240,21 @@ public class SharedState implements Serializable {
                 lastAckTime = 0L;
             }
             long diff = now - lastAckTime;
-            if (diff > heartbeatTimeoutMs) {
+            if (diff > 5*heartbeatTimeoutMs) {
+                // Increment missed heartbeats counter
+                int missed = missedHeartbeats.getOrDefault(brokerId, 0) + 1;
+                missedHeartbeats.put(brokerId, missed);
                 // Mark broker as removed or handle re-election logic
-                System.out.println("Leader: Broker " + brokerId + " timed out, removing...");
-                removeBrokerAddress(brokerId);
+                // Only remove after missing multiple heartbeats (at least 2)
+                if (missed >= 3) {
+                    System.out.println("Leader: Broker " + brokerId + " missed " + missed +
+                            " heartbeats, removing...");
+                    removeBrokerAddress(brokerId);
+                    missedHeartbeats.remove(brokerId);
+                } else {
+                    System.out.println("Leader: Broker " + brokerId + " missed heartbeat " +
+                            missed + " of 3 required before removal");
+                }
             }
         }
     }
@@ -245,10 +263,21 @@ public class SharedState implements Serializable {
     public void checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
         long now = System.currentTimeMillis();
         long diff = now - lastHeartbeatFromLeader;
-        if (diff > heartbeatTimeoutMs) {
-            // Follower suspects leader is dead
-            System.out.println("Follower " + myId + ": Leader " + getLeaderId() + " has not sent heartbeat. "
-                    + "Consider leader failed. (No re-election logic here.)");
+        if (diff > 5*heartbeatTimeoutMs) {
+            // Increment missed heartbeats counter
+            int missed = missedLeaderHeartbeats.getOrDefault(myId, 0) + 1;
+            missedLeaderHeartbeats.put(myId, missed);
+
+            // Only consider leader failed after multiple missed heartbeats
+            if (missed >= 3) {
+                // Follower suspects leader is dead
+                System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
+                        " has missed " + missed + " heartbeats. Consider leader failed. (No re-election logic here.)");
+                // Would trigger leader election here if implemented
+            } else {
+                System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
+                        " missed heartbeat " + missed + " of 3 required before considered failed");
+            }
         }
     }
 
