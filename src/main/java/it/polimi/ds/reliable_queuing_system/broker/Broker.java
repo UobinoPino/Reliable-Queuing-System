@@ -29,6 +29,14 @@ public class Broker {
     private static Thread heartbeatSenderThread;
     private static Thread heartbeatMonitorThread;
 
+    // Election-related variables
+    private static volatile boolean electionInProgress = false;
+    private static volatile int currentBestCandidate = -1;
+    private static volatile int currentBestLogLength = -1;
+    private static final Set<Integer> receivedAcks = Collections.synchronizedSet(new HashSet<>());
+    private static final Object electionLock = new Object();
+    private static final Random random = new Random();
+
     public static void main(String[] args) {
         System.out.println("======== RELIABLE QUEUING SYSTEM: BROKER ========");
 
@@ -42,6 +50,8 @@ public class Broker {
             sharedState = new SharedState();
             brokerId = sharedState.getNewBrokerId();
             sharedState.addBrokerAddress(brokerId, brokerAddress);
+            //TODO: print the brokerId and address
+            System.out.println("First: Broker " + brokerId + " started with address: " + brokerAddress);
             sharedState.setNewLeaderId(brokerId);
 
             // Start heartbeat mechanism for the leader
@@ -78,6 +88,7 @@ public class Broker {
                     if (brokerState == BrokerState.WAITING_JOIN) {
                         if (message instanceof BrokerJoinResponse brokerJoinResponse) {
                             brokerId = brokerJoinResponse.newBrokerId();
+                            System.out.println("Not first: Broker " + brokerId + " started with address: " + brokerAddress);
                             sharedState = brokerJoinResponse.sharedState();
                             brokerState = BrokerState.READY;
 
@@ -101,11 +112,9 @@ public class Broker {
                             case Heartbeat msg -> handleHeartbeat(msg);
                             case HeartbeatAck msg -> handleHeartbeatAck(msg);
                             case BrokerRemoval msg -> handleBrokerRemoval(msg);
-
-                            //TODO: implement and uncomment the following:
-//                            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
-//                            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
-//                            case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
+                            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
+                            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
+                            case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
                             default -> throw new ClassNotFoundException();
                         }
                     }
@@ -435,62 +444,7 @@ public class Broker {
         }
     }
 
-   /* private static void startHeartbeatSender() {
-        heartbeatSenderThread = new Thread(() -> {
-            try {
-                while (!Thread.interrupted()) {
-                    // Send heartbeat to all followers
-                    Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
-                    for (Integer id : brokerAddresses.keySet()) {
-                        if (!id.equals(brokerId)) {
-                            try {
-                                sendMessage(brokerAddresses.get(id), new Heartbeat());
-                            } catch (Exception e) {
-                                System.out.println("[WARNING]: Failed to send heartbeat to broker " + id);
-                            }
-                        }
-                    }
-
-                    // Check for follower timeouts and notify other followers about removals
-                    List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
-                    if (!removedBrokers.isEmpty()) {
-                        System.out.println("Leader: Detected removed brokers: " + removedBrokers);
-                    } else {
-                        System.out.println("Leader: No removed brokers detected.");
-                    }
-                    if (!removedBrokers.isEmpty()) {
-                        // Get the current set of brokers (after removal)
-                        Map<Integer, Address> remainingBrokers = sharedState.getBrokerAddresses();
-                    // If any brokers were removed, notify all other brokers
-                    // For each removed broker, send notification to all remaining brokers
-                        for (Integer removedBrokerId : removedBrokers) {
-                            System.out.println("Leader: Broadcasting removal of broker " + removedBrokerId);
-
-                            // Send to each remaining broker (except self)
-                            for (Map.Entry<Integer, Address> broker : remainingBrokers.entrySet()) {
-                                Integer targetId = broker.getKey();
-                                if (!targetId.equals(brokerId)) {
-                                    try {
-                                        sendMessage(broker.getValue(), new BrokerRemoval(removedBrokerId));
-                                    } catch (Exception e) {
-                                        System.out.println("[WARNING]: Failed to notify broker " + targetId +
-                                                " about removal of broker " + removedBrokerId);
-                                    }
-                                }
-                            }
-                        }
-                }
-
-                    Thread.sleep(HEARTBEAT_INTERVAL_MS);
-                }
-            } catch (InterruptedException e) {
-                // Exit gracefully
-            }
-        });
-        heartbeatSenderThread.setDaemon(true);
-        heartbeatSenderThread.start();
-    } */
-   private static void startHeartbeatSender() {
+ /*  private static void startHeartbeatSender() {
        heartbeatSenderThread = new Thread(() -> {
            try {
                // Track brokers that we've detected as failed
@@ -498,7 +452,7 @@ public class Broker {
 
                while (!Thread.interrupted()) {
                    // Get up-to-date broker list each cycle
-                   Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+                   Map<Integer, Address> brokerAddresses = new HashMap<>(sharedState.getBrokerAddresses());
 
                    // Remove any previously failed brokers from our tracking set if they're no longer in brokerAddresses
                    knownFailedBrokers.removeIf(id -> !brokerAddresses.containsKey(id));
@@ -507,6 +461,7 @@ public class Broker {
                    for (Integer id : brokerAddresses.keySet()) {
                        if (!id.equals(brokerId) && !knownFailedBrokers.contains(id)) {
                            try {
+                               System.out.println("Leader: Sending heartbeat to broker " + id);
                                sendMessage(brokerAddresses.get(id), new Heartbeat());
                            } catch (Exception e) {
                                System.out.println("[WARNING]: Failed to send heartbeat to broker " + id);
@@ -551,13 +506,163 @@ public class Broker {
        });
        heartbeatSenderThread.setDaemon(true);
        heartbeatSenderThread.start();
-   }
+   } */
+/* private static void startHeartbeatSender() {
+     heartbeatSenderThread = new Thread(() -> {
+         try {
+             System.out.println("Leader " + brokerId + ": Starting heartbeat sender thread");
+             // Track brokers that we've detected as failed
+             Set<Integer> knownFailedBrokers = new HashSet<>();
+
+             while (!Thread.interrupted()) {
+                 // Get up-to-date broker list each cycle
+                 Map<Integer, Address> brokerAddresses = new HashMap<>(sharedState.getBrokerAddresses());
+
+                 // Remove any previously failed brokers from our tracking set if they're no longer in brokerAddresses
+                 knownFailedBrokers.removeIf(id -> !brokerAddresses.containsKey(id));
+
+                 // Send heartbeat to all active followers (skip failed ones)
+                 for (Integer id : brokerAddresses.keySet()) {
+                     if (!id.equals(brokerId) && !knownFailedBrokers.contains(id)) {
+                         try {
+                             Address followerAddr = brokerAddresses.get(id);
+                             System.out.println("Leader " + brokerId + ": Sending heartbeat to broker " + id + " at " + followerAddr);
+                             Socket socket = new Socket(followerAddr.ip(), followerAddr.port());
+                             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+                             out.writeObject(new Heartbeat());
+                             out.flush();
+                             socket.close();
+                         } catch (Exception e) {
+                             System.out.println("[WARNING]: Failed to send heartbeat to broker " + id + ": " + e.getMessage());
+                         }
+                     }
+                 }
+
+                 // Check for follower timeouts
+                 List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+
+                 // If any brokers were removed, add them to failed set and notify others
+                 if (!removedBrokers.isEmpty()) {
+                     System.out.println("Leader " + brokerId + ": Detected removed brokers: " + removedBrokers);
+                     knownFailedBrokers.addAll(removedBrokers);
+
+                     // Get remaining brokers after removal
+                     Map<Integer, Address> remainingBrokers = sharedState.getBrokerAddresses();
+
+                     // Broadcast removal notifications
+                     for (Integer removedBrokerId : removedBrokers) {
+                         System.out.println("Leader " + brokerId + ": Broadcasting removal of broker " + removedBrokerId);
+
+                         for (Map.Entry<Integer, Address> broker : remainingBrokers.entrySet()) {
+                             Integer targetId = broker.getKey();
+                             if (!targetId.equals(brokerId)) {
+                                 try {
+                                     sendMessage(broker.getValue(), new BrokerRemoval(removedBrokerId));
+                                 } catch (Exception e) {
+                                     System.out.println("[WARNING]: Failed to notify broker " + targetId +
+                                             " about removal of broker " + removedBrokerId);
+                                 }
+                             }
+                         }
+                     }
+                 }
+
+                 Thread.sleep(HEARTBEAT_INTERVAL_MS);
+             }
+         } catch (InterruptedException e) {
+             // Exit gracefully
+             System.out.println("Leader " + brokerId + ": Heartbeat sender thread interrupted");
+         } catch (Exception e) {
+             System.out.println("Leader " + brokerId + ": Error in heartbeat sender: " + e.getMessage());
+         }
+     });
+     heartbeatSenderThread.setDaemon(true);
+     heartbeatSenderThread.start();
+     System.out.println("Leader " + brokerId + ": Heartbeat sender thread started");
+ } */
+ private static void startHeartbeatSender() {
+     heartbeatSenderThread = new Thread(() -> {
+         try {
+             System.out.println("Leader " + brokerId + ": Starting heartbeat sender thread");
+             Set<Integer> knownFailedBrokers = new HashSet<>();
+
+             // Get my own address once for comparison
+             Address myAddress = sharedState.getBrokerAddress(brokerId);
+             if (myAddress == null) {
+                 System.out.println("[ERROR]: Cannot find my own address in broker list");
+                 return;
+             }
+
+             while (!Thread.interrupted()) {
+                 Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+                 System.out.println("startHeartbeatSender: Broker " + brokerId + ": Current brokers: " + sharedState.getBrokerAddresses());
+                 knownFailedBrokers.removeIf(id -> !brokerAddresses.containsKey(id));
+
+                 // Send heartbeat to all active followers, avoiding same-address brokers
+                 for (Integer id : brokerAddresses.keySet()) {
+                     Address followerAddr = brokerAddresses.get(id);
+
+                     // Skip myself by ID and any broker with identical address
+                     if (id.equals(brokerId) ||
+                             (followerAddr.ip().equals(myAddress.ip()) &&
+                                     Objects.equals(followerAddr.port(), myAddress.port()))) {
+                         continue;
+                     }
+
+                     if (!knownFailedBrokers.contains(id) ) {
+                         try {
+                             System.out.println("Leader " + brokerId + ": Sending heartbeat to broker " + id);
+                             Socket socket = new Socket(followerAddr.ip(), followerAddr.port());
+                             socket.setSoTimeout(1000);
+                             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+                             out.writeObject(new Heartbeat());
+                             out.flush();
+                             socket.close();
+                         } catch (Exception e) {
+                             System.out.println("[WARNING]: Failed to send heartbeat to broker " + id + ": " + e.getMessage());
+                         }
+                     }
+                 }
+
+                 // Check for follower timeouts
+                 List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+
+                 // Process broker removals
+                 if (!removedBrokers.isEmpty()) {
+                     System.out.println("Leader " + brokerId + ": Removing brokers: " + removedBrokers);
+                     knownFailedBrokers.addAll(removedBrokers);
+                     // Broadcast removals to other brokers...
+                 }
+
+                 Thread.sleep(HEARTBEAT_INTERVAL_MS);
+             }
+         } catch (InterruptedException e) {
+             System.out.println("Leader " + brokerId + ": Heartbeat sender thread interrupted");
+         } catch (Exception e) {
+             System.out.println("Leader " + brokerId + ": Error in heartbeat sender: " + e.getMessage());
+         }
+     });
+     heartbeatSenderThread.setDaemon(true);
+     heartbeatSenderThread.start();
+ }
+
+
     private static void startHeartbeatMonitor() {
         heartbeatMonitorThread = new Thread(() -> {
             try {
                 while (!Thread.interrupted()) {
                     // Check if leader has timed out
-                    sharedState.checkLeaderTimeout(brokerId, HEARTBEAT_TIMEOUT_MS);
+                    boolean leaderFailed = !electionInProgress && sharedState.checkLeaderTimeout(brokerId, HEARTBEAT_TIMEOUT_MS);
+                    if (leaderFailed) {
+                        synchronized (electionLock) {
+                            if (!electionInProgress) {
+                                electionInProgress = true;
+                                // Add random delay to prevent all followers starting election at once
+                                Thread.sleep(random.nextInt(1000));
+                                startLeaderElection();
+                            }
+                        }
+                    }
 
                     Thread.sleep(HEARTBEAT_TIMEOUT_MS / 3);
                 }
@@ -568,6 +673,285 @@ public class Broker {
         heartbeatMonitorThread.setDaemon(true);
         heartbeatMonitorThread.start();
     }
+
+    private static void startLeaderElection() {
+        System.out.println("Broker " + brokerId + ": Starting leader election");
+
+        int failedLeaderId = sharedState.getLeaderId();
+        sharedState.removeBrokerAddress(failedLeaderId);
+        System.out.println("Broker " + brokerId + ": Removed failed leader " + failedLeaderId + " from active brokers");
+
+        // Reset election state
+        currentBestCandidate = brokerId;
+        currentBestLogLength = sharedState.getLogLength();
+        receivedAcks.clear();
+        receivedAcks.add(brokerId); // Count ourselves
+
+        // Get only currently active brokers
+        Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+        System.out.println("startleaderElection: Broker " + brokerId + ": Current brokers: " + sharedState.getBrokerAddresses());
+
+        // Remove the failed leader from consideration
+        brokerAddresses.remove(sharedState.getLeaderId());
+
+        int activeBrokerCount = brokerAddresses.size();
+        int requiredAcks = activeBrokerCount / 2;  // We already counted ourselves
+        System.out.println("Broker " + brokerId + ": Election among " + activeBrokerCount +
+                " active brokers, expecting " + requiredAcks + " acks");
+
+        // Send nomination to all other brokers
+        NewLeaderNomination nomination = new NewLeaderNomination(brokerId, currentBestLogLength);
+
+        for (Map.Entry<Integer, Address> entry : brokerAddresses.entrySet()) {
+            System.out.println("Brokerrr " + brokerId + ": with address" + brokerAddresses.get(entry.getKey()));
+            Integer targetId = entry.getKey();
+
+            //TODO: check if the targetId is the same as the brokerId and also that the targetId has a different port from brokerId
+            if (!targetId.equals(brokerId) && !Objects.equals(brokerAddresses.get(targetId).port(), brokerAddresses.get(brokerId).port())) {
+
+
+                try {
+                    sendMessage(entry.getValue(), nomination);
+                    System.out.println("Broker " + brokerId + ": Sent nomination to broker " + targetId + "with address " + entry.getValue());
+                } catch (Exception e) {
+                    System.out.println("[WARNING]: Failed to send nomination to broker " + targetId + ": " + e.getMessage());
+                    sharedState.removeBrokerAddress(targetId);
+                }
+            }
+        }
+
+        // Start a timeout for the election process
+        new Thread(() -> {
+            try {
+                Thread.sleep(5000); // 5 second timeout
+                synchronized (electionLock) {
+                    if (electionInProgress && currentBestCandidate == brokerId) {
+                        System.out.println("Broker " + brokerId + ": Election timed out, declaring self as leader");
+
+                        // Update shared state
+                        sharedState.setNewLeaderId(brokerId);
+
+                        // Announce new leadership
+                        NewLeaderAnnouncement announcement = new NewLeaderAnnouncement(brokerId);
+
+                        for (Map.Entry<Integer, Address> entry : brokerAddresses.entrySet()) {
+                            Integer targetId = entry.getKey();
+                            if (!targetId.equals(brokerId)) {
+                                try {
+                                    sendMessage(entry.getValue(), announcement);
+                                    System.out.println("Broker " + brokerId + ": Sent leader announcement to broker " + targetId);
+                                } catch (Exception e) {
+                                    System.out.println("[WARNING]: Failed to send leader announcement to broker " + targetId);
+                                }
+                            }
+                        }
+
+                        // Reset election state and switch to leader mode
+                        electionInProgress = false;
+                        stopHeartbeatThreads();
+                        startHeartbeatSender();
+                    }
+                }
+            } catch (InterruptedException e) {
+                // Ignore
+            }
+        }).start();
+    }
+
+    private static void handleNewLeaderNomination(NewLeaderNomination msg) {
+        System.out.println("Broker " + brokerId + ": Received leader nomination from broker " +
+                msg.brokerId() + " with log length " + msg.logLength());
+
+        synchronized (electionLock) {
+            if (!electionInProgress) {
+                electionInProgress = true;
+                currentBestCandidate = brokerId;
+                currentBestLogLength = sharedState.getLogLength();
+                System.out.println("Broker " + brokerId + ": Starting election process, my log length: " + currentBestLogLength);
+                //startLeaderElection();
+            }
+
+            // Compare log lengths
+            int myLogLength = sharedState.getLogLength();
+            boolean sendAck = false;
+
+            System.out.println("Broker " + brokerId + ": Comparing log lengths - mine: " + myLogLength +
+                    ", candidate " + msg.brokerId() + ": " + msg.logLength());
+
+            if (msg.logLength() > myLogLength) {
+                // The other broker has a longer log, they should be the leader
+                currentBestCandidate = msg.brokerId();
+                currentBestLogLength = msg.logLength();
+                sendAck = true;
+                System.out.println("Broker " + brokerId + ": Candidate has longer log, will send ACK");
+                //sendNominationAck(msg.brokerId());
+            } else if (myLogLength > msg.logLength()) {
+                // My log is longer, I should be the leader - send my nomination
+                System.out.println("Broker " + brokerId + ": My log is longer, sending my nomination");
+                Address candidateAddr = sharedState.getBrokerAddress(msg.brokerId());
+
+                if (candidateAddr != null) {
+                    try {
+                        NewLeaderNomination myNomination = new NewLeaderNomination(brokerId, myLogLength);
+                        sendMessage(candidateAddr, myNomination);
+                        System.out.println("Broker " + brokerId + ": Sent my nomination to broker " + msg.brokerId());
+                    } catch (Exception e) {
+                        System.out.println("[WARNING]: Failed to send nomination to broker " + msg.brokerId() + ": " + e.getMessage());
+                    }
+                } else {
+                    System.out.println("[WARNING]: Could not find address for broker " + msg.brokerId());
+                }
+            } else {
+                // Equal log lengths, use broker ID as tiebreaker
+                System.out.println("Broker " + brokerId + ": Equal log lengths, using broker ID as tiebreaker");
+                if (msg.brokerId() > brokerId) {
+                    currentBestCandidate = msg.brokerId();
+                    sendAck = true;
+                    System.out.println("Broker " + brokerId + ": Candidate has higher ID, will send ACK");
+                    //sendNominationAck(msg.brokerId());
+                } else {
+                    System.out.println("Broker " + brokerId + ": I have higher ID, no ACK needed");
+                }
+            }
+
+            // Send ACK if the other broker has a better candidacy
+            if (sendAck) {
+                Address candidateAddr = sharedState.getBrokerAddress(msg.brokerId());
+                if (candidateAddr != null) {
+                    try {
+                        sendMessage(candidateAddr, new NewLeaderNominationAck(brokerId));
+                        System.out.println("Broker " + brokerId + ": Sent nomination ACK to broker " + msg.brokerId());
+                    } catch (Exception e) {
+                        System.out.println("[WARNING]: Failed to send nomination ACK to broker " + msg.brokerId() + ": " + e.getMessage());
+                    }
+                } else {
+                    System.out.println("[WARNING]: Could not find address for broker " + msg.brokerId());
+                }
+            }
+        }
+    }
+    private static void sendNominationAck(int candidateId) {
+        Address candidateAddr = sharedState.getBrokerAddress(candidateId);
+        if (candidateAddr != null) {
+            try {
+                sendMessage(candidateAddr, new NewLeaderNominationAck(brokerId));
+                System.out.println("Broker " + brokerId + ": Sent nomination ACK to broker " + candidateId);
+            } catch (Exception e) {
+                System.out.println("[WARNING]: Failed to send nomination ACK: " + e.getMessage());
+            }
+        } else {
+            System.out.println("[WARNING]: Could not find address for broker " + candidateId);
+        }
+    }
+
+    private static void handleNewLeaderNominationAck(NewLeaderNominationAck msg) {
+        synchronized (electionLock) {
+            // Only process ACKs if we're a candidate
+            if (currentBestCandidate == brokerId) {
+                System.out.println("Broker " + brokerId + ": Received nomination ACK from broker " + msg.senderId());
+                receivedAcks.add(msg.senderId());
+
+                // Count the number of active brokers (excluding the crashed leader)
+                Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+                System.out.println("handlenewleadernomack: Broker " + brokerId + ": Current brokers: " + sharedState.getBrokerAddresses());
+                brokerAddresses.remove(sharedState.getLeaderId()); // Remove failed leader
+                int activeCount = brokerAddresses.size();
+
+                System.out.println("Broker " + brokerId + ": Current ACK count: " +
+                        receivedAcks.size() + "/" + activeCount + " (including self)");
+
+                // Check if we have received acks from majority of active brokers
+                if (receivedAcks.size() >= (activeCount / 2 + 1)) {
+                    // We're the new leader!
+                    System.out.println("Broker " + brokerId + ": Received majority of ACKs, becoming new leader");
+
+                    // Update shared state
+                    sharedState.setNewLeaderId(brokerId);
+
+                    // Announce new leadership
+                    NewLeaderAnnouncement announcement = new NewLeaderAnnouncement(brokerId);
+
+                    for (Map.Entry<Integer, Address> entry : brokerAddresses.entrySet()) {
+                        Integer targetId = entry.getKey();
+                        if (!targetId.equals(brokerId)) {
+                            try {
+                                sendMessage(entry.getValue(), announcement);
+                                System.out.println("Broker " + brokerId + ": Sent leader announcement to broker " + targetId);
+                            } catch (Exception e) {
+                                System.out.println("[WARNING]: Failed to send leader announcement to broker " + targetId + ": " + e.getMessage());
+                            }
+                        }
+                    }
+
+                    // Reset election state and switch to leader mode
+                    electionInProgress = false;
+                    stopHeartbeatThreads();
+                    startHeartbeatSender();
+                }
+            } else {
+                System.out.println("Broker " + brokerId + ": Received ACK from " + msg.senderId() +
+                        " but I'm not the best candidate (current best: " + currentBestCandidate + ")");
+            }
+        }
+    }
+
+  /*  private static void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
+        System.out.println("Broker " + brokerId + ": Received leader announcement from broker " + msg.brokerId());
+
+        // Update leader info
+        sharedState.setNewLeaderId(msg.brokerId());
+
+        // Reset election state
+        synchronized (electionLock) {
+            electionInProgress = false;
+            currentBestCandidate = -1;
+            currentBestLogLength = -1;
+            receivedAcks.clear();
+        }
+
+        // Restart heartbeat mechanism in follower mode
+        stopHeartbeatThreads();
+        startHeartbeatMonitor();
+    }  */
+  private static void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
+      System.out.println("Broker " + brokerId + ": Received leader announcement from broker " + msg.brokerId());
+
+      // First stop all heartbeat threads to avoid conflicts
+      stopHeartbeatThreads();
+
+      // Update leader info
+      sharedState.setNewLeaderId(msg.brokerId());
+
+      // Reset election state
+      synchronized (electionLock) {
+          electionInProgress = false;
+          currentBestCandidate = -1;
+          currentBestLogLength = -1;
+          receivedAcks.clear();
+      }
+
+      if (msg.brokerId() != brokerId) {
+          try {
+              Address leaderAddr = sharedState.getBrokerAddress(msg.brokerId());
+              if (leaderAddr != null) {
+                  sendMessage(leaderAddr, new HeartbeatAck(brokerId));
+                  System.out.println("Broker " + brokerId + ": Sending initial heartbeat ack to new leader " + msg.brokerId());
+              }
+          } catch (Exception e) {
+              System.out.println("[WARNING]: Failed to send initial heartbeat ack: " + e.getMessage());
+          }
+
+          // Start heartbeat monitor only if I'm not the leader
+          startHeartbeatMonitor();
+          System.out.println("Broker " + brokerId + ": Switched to follower mode, monitoring leader " + msg.brokerId());
+      } else {
+          // I am the leader, start heartbeat sender
+          startHeartbeatSender();
+          System.out.println("Broker " + brokerId + ": I am the new leader, starting heartbeat sender");
+          //TODO: here print the list of brokers and their addresses
+            System.out.println("Broker " + brokerId + ": Current brokers: " + sharedState.getBrokerAddresses());
+      }
+  }
 
     //endregion
 
@@ -586,7 +970,7 @@ public class Broker {
         }
     }
 
-    private static void addBroker(BrokerJoinRequest req) {
+   /* private static void addBroker(BrokerJoinRequest req) {
         // get a new broker id from the shared state
         int newBrokerId = sharedState.getNewBrokerId();
 
@@ -597,7 +981,37 @@ public class Broker {
         if (isLeader()) {
             sendMessage(req.brokerAddress(), new BrokerJoinResponse(newBrokerId, sharedState));
         }
-    }
+    } */
+   private static void addBroker(BrokerJoinRequest req) {
+       // First check if this broker's address already exists
+       int newBrokerId = -1;
+       Map<Integer, Address> existingBrokers = sharedState.getBrokerAddresses();
+
+       // Check if the address already exists in the system
+       for (Map.Entry<Integer, Address> entry : existingBrokers.entrySet()) {
+           Address existingAddr = entry.getValue();
+           if (existingAddr.ip().equals(req.brokerAddress().ip()) &&
+                   Objects.equals(existingAddr.port(), req.brokerAddress().port())) {
+               // Address already exists, use the existing broker ID
+               newBrokerId = entry.getKey();
+               System.out.println("[INFOo]: Broker with address " + req.brokerAddress() +
+                       " already exists with ID " + newBrokerId);
+               break;
+           }
+       }
+
+       // If no existing broker with this address, get a new broker ID
+       if (newBrokerId == -1) {
+           newBrokerId = sharedState.getNewBrokerId();
+           // Add the broker to the list in the shared state
+           sharedState.addBrokerAddress(newBrokerId, req.brokerAddress());
+       }
+
+       // If leader, return a BrokerJoinResponse to the requesting broker
+       if (isLeader()) {
+           sendMessage(req.brokerAddress(), new BrokerJoinResponse(newBrokerId, sharedState));
+       }
+   }
 
     private static void assignClientId(ClientIdRequest req) {
         // get a new client id from the shared state

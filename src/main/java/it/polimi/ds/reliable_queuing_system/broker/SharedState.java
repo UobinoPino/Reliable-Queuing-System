@@ -222,7 +222,26 @@ public class SharedState implements Serializable {
     }
 
     /// Adds a new broker with given id and address into the known brokers map.
+   /* public void addBrokerAddress(int brokerId, Address address) {
+        knownBrokers.put(brokerId, address);
+    }*/
     public void addBrokerAddress(int brokerId, Address address) {
+        // Check if this address already exists with a different broker ID
+        for (Map.Entry<Integer, Address> entry : knownBrokers.entrySet()) {
+            Address existingAddress = entry.getValue();
+            if (existingAddress.ip().equals(address.ip()) &&
+                    Objects.equals(existingAddress.port(), address.port())) {
+                if (entry.getKey() != brokerId) {
+                    System.out.println("[WARNING]: Duplicate address detected! Address " +
+                            address + " already exists with broker ID " + entry.getKey() +
+                            ". Not adding duplicate with ID " + brokerId);
+                    return; // Don't add the duplicate
+                }
+            }
+        }
+
+        // If we get here, either it's not a duplicate or it's updating the same broker ID
+        System.out.println("[INFO]: Added broker " + brokerId + " with address " + address);
         knownBrokers.put(brokerId, address);
     }
 
@@ -393,7 +412,11 @@ public class SharedState implements Serializable {
     }
 
     // Follower checks if the leader has timed out
-    public void checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
+    public boolean checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
+        if (getLeaderId() == myId) {
+            // I'm the leader, can't timeout myself
+            return false;
+        }
         long now = System.currentTimeMillis();
         long diff = now - lastHeartbeatFromLeader;
         if (diff > 5*heartbeatTimeoutMs) {
@@ -405,13 +428,16 @@ public class SharedState implements Serializable {
             if (missed >= 3) {
                 // Follower suspects leader is dead
                 System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
-                        " has missed " + missed + " heartbeats. Consider leader failed. (No re-election logic here.)");
-                // Would trigger leader election here if implemented
+                        " has missed " + missed + " heartbeats. Consider leader failed. (Starting leader election)");
+                return true; // Trigger leader election
             } else {
                 System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
                         " missed heartbeat " + missed + " of 3 required before considered failed");
+                // If we are not sure yet, just return false
+
             }
         }
+        return false;
     }
 
 }
