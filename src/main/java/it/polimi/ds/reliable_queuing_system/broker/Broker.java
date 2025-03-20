@@ -23,8 +23,8 @@ public class Broker {
 
     private static BrokerState brokerState;
 
-    private static final long HEARTBEAT_INTERVAL_MS = 500; // 5 seconds
-    private static final long HEARTBEAT_TIMEOUT_MS = 1500; // 15 seconds
+    private static final long HEARTBEAT_INTERVAL_MS = 500;
+    private static final long HEARTBEAT_TIMEOUT_MS = 2000;
 
     private static Thread heartbeatSenderThread;
     private static Thread heartbeatMonitorThread;
@@ -100,8 +100,9 @@ public class Broker {
                             case WriteRequest msg -> handleWriteRequest(msg);
                             case Heartbeat msg -> handleHeartbeat(msg);
                             case HeartbeatAck msg -> handleHeartbeatAck(msg);
+                            case BrokerRemoval msg -> handleBrokerRemoval(msg);
+
                             //TODO: implement and uncomment the following:
-//                            case BrokerRemoval msg -> handleBrokerRemoval(msg);
 //                            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
 //                            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
 //                            case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
@@ -227,7 +228,11 @@ public class Broker {
             out.writeObject(message);
             out.flush();
         } catch (IOException e) {
-            System.out.println("Oh no, anyway");  //TODO: replace with proper error handling
+
+            System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
+
+
+
         }
     }
 
@@ -401,6 +406,15 @@ public class Broker {
             }
         }
     }
+    private static void handleBrokerRemoval(BrokerRemoval msg) {
+        int removedBrokerId = msg.brokerId();
+
+        // Only process if we're not the leader (leader already removed it)
+        if (!isLeader()) {
+            System.out.println("Follower " + brokerId + ": Received broker removal notification for broker " + removedBrokerId);
+            sharedState.removeBrokerAddress(removedBrokerId);
+        }
+    }
 
     private static void startHeartbeatMechanism() {
         stopHeartbeatThreads();
@@ -421,7 +435,7 @@ public class Broker {
         }
     }
 
-    private static void startHeartbeatSender() {
+   /* private static void startHeartbeatSender() {
         heartbeatSenderThread = new Thread(() -> {
             try {
                 while (!Thread.interrupted()) {
@@ -437,8 +451,35 @@ public class Broker {
                         }
                     }
 
-                    // Check for follower timeouts
-                    sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+                    // Check for follower timeouts and notify other followers about removals
+                    List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+                    if (!removedBrokers.isEmpty()) {
+                        System.out.println("Leader: Detected removed brokers: " + removedBrokers);
+                    } else {
+                        System.out.println("Leader: No removed brokers detected.");
+                    }
+                    if (!removedBrokers.isEmpty()) {
+                        // Get the current set of brokers (after removal)
+                        Map<Integer, Address> remainingBrokers = sharedState.getBrokerAddresses();
+                    // If any brokers were removed, notify all other brokers
+                    // For each removed broker, send notification to all remaining brokers
+                        for (Integer removedBrokerId : removedBrokers) {
+                            System.out.println("Leader: Broadcasting removal of broker " + removedBrokerId);
+
+                            // Send to each remaining broker (except self)
+                            for (Map.Entry<Integer, Address> broker : remainingBrokers.entrySet()) {
+                                Integer targetId = broker.getKey();
+                                if (!targetId.equals(brokerId)) {
+                                    try {
+                                        sendMessage(broker.getValue(), new BrokerRemoval(removedBrokerId));
+                                    } catch (Exception e) {
+                                        System.out.println("[WARNING]: Failed to notify broker " + targetId +
+                                                " about removal of broker " + removedBrokerId);
+                                    }
+                                }
+                            }
+                        }
+                }
 
                     Thread.sleep(HEARTBEAT_INTERVAL_MS);
                 }
@@ -448,8 +489,69 @@ public class Broker {
         });
         heartbeatSenderThread.setDaemon(true);
         heartbeatSenderThread.start();
-    }
+    } */
+   private static void startHeartbeatSender() {
+       heartbeatSenderThread = new Thread(() -> {
+           try {
+               // Track brokers that we've detected as failed
+               Set<Integer> knownFailedBrokers = new HashSet<>();
 
+               while (!Thread.interrupted()) {
+                   // Get up-to-date broker list each cycle
+                   Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
+
+                   // Remove any previously failed brokers from our tracking set if they're no longer in brokerAddresses
+                   knownFailedBrokers.removeIf(id -> !brokerAddresses.containsKey(id));
+
+                   // Send heartbeat to all active followers (skip failed ones)
+                   for (Integer id : brokerAddresses.keySet()) {
+                       if (!id.equals(brokerId) && !knownFailedBrokers.contains(id)) {
+                           try {
+                               sendMessage(brokerAddresses.get(id), new Heartbeat());
+                           } catch (Exception e) {
+                               System.out.println("[WARNING]: Failed to send heartbeat to broker " + id);
+                           }
+                       }
+                   }
+
+                   // Check for follower timeouts
+                   List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
+
+                   // If any brokers were removed, add them to failed set and notify others
+                   if (!removedBrokers.isEmpty()) {
+                       System.out.println("Leader: Detected removed brokers: " + removedBrokers);
+                       knownFailedBrokers.addAll(removedBrokers);
+
+                       // Get remaining brokers after removal
+                       Map<Integer, Address> remainingBrokers = sharedState.getBrokerAddresses();
+
+                       // Broadcast removal notifications
+                       for (Integer removedBrokerId : removedBrokers) {
+                           System.out.println("Leader: Broadcasting removal of broker " + removedBrokerId);
+
+                           for (Map.Entry<Integer, Address> broker : remainingBrokers.entrySet()) {
+                               Integer targetId = broker.getKey();
+                               if (!targetId.equals(brokerId)) {
+                                   try {
+                                       sendMessage(broker.getValue(), new BrokerRemoval(removedBrokerId));
+                                   } catch (Exception e) {
+                                       System.out.println("[WARNING]: Failed to notify broker " + targetId +
+                                               " about removal of broker " + removedBrokerId);
+                                   }
+                               }
+                           }
+                       }
+                   }
+
+                   Thread.sleep(HEARTBEAT_INTERVAL_MS);
+               }
+           } catch (InterruptedException e) {
+               // Exit gracefully
+           }
+       });
+       heartbeatSenderThread.setDaemon(true);
+       heartbeatSenderThread.start();
+   }
     private static void startHeartbeatMonitor() {
         heartbeatMonitorThread = new Thread(() -> {
             try {

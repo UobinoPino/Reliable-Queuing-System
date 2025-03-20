@@ -356,8 +356,10 @@ public class SharedState implements Serializable {
     }
 
     // Leader checks if followers have timed out
-    public void checkFollowerTimeouts(long heartbeatTimeoutMs) {
+    public List<Integer> checkFollowerTimeouts(long heartbeatTimeoutMs) {
         long now = System.currentTimeMillis();
+        List<Integer> removedBrokers = new ArrayList<>();
+
         for (Integer brokerId : knownBrokers.keySet()) {
             if (brokerId.equals(this.getLeaderId())) {
                 continue; // skip self
@@ -377,14 +379,17 @@ public class SharedState implements Serializable {
                 if (missed >= 3) {
                     System.out.println("Leader: Broker " + brokerId + " missed " + missed +
                             " heartbeats, removing...");
+                    removedBrokers.add(brokerId); // Add to the list of removed brokers
                     removeBrokerAddress(brokerId);
                     missedHeartbeats.remove(brokerId);
+
                 } else {
                     System.out.println("Leader: Broker " + brokerId + " missed heartbeat " +
                             missed + " of 3 required before removal");
                 }
             }
         }
+        return removedBrokers;
     }
 
     // Follower checks if the leader has timed out
