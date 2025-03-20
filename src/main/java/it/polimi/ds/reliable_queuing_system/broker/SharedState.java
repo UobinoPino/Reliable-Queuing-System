@@ -3,11 +3,23 @@ package it.polimi.ds.reliable_queuing_system.broker;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
+
+
+import java.io.File;
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.*;
+import java.lang.reflect.Type;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+
+
 
 /// A class that contains the state replicated over all the brokers.
 public class SharedState implements Serializable {
@@ -33,6 +45,120 @@ public class SharedState implements Serializable {
     private final Map<Integer, Integer> missedHeartbeats = new ConcurrentHashMap<>();
     private final Map<Integer, Integer> missedLeaderHeartbeats = new ConcurrentHashMap<>();
 
+    // File paths for persistence
+    private static final String DATA_DIR = "broker_data";
+    private static final String QUEUES_FILE = DATA_DIR + "/queues.json";
+    private static final String OFFSETS_FILE = DATA_DIR + "/client_offsets.json";
+
+    // Gson instance for JSON serialization/deserialization
+    private transient Gson gson = new GsonBuilder().setPrettyPrinting().create();
+
+
+    public SharedState() {
+        // Create data directory if it doesn't exist
+        try {
+            Files.createDirectories(Paths.get(DATA_DIR));
+        } catch (IOException e) {
+            System.err.println("Failed to create data directory: " + e.getMessage());
+        }
+
+        // Load persisted data if available
+        loadPersistedState();
+    }
+    /**
+     * Load persisted state from disk
+     */
+    private void loadPersistedState() {
+        loadQueues();
+        loadClientOffsets();
+    }
+    /**
+    * Load queues from disk
+     */
+    private void loadQueues() {
+        try {
+            File file = new File(QUEUES_FILE);
+            if (file.exists()) {
+                String json = new String(Files.readAllBytes(file.toPath()));
+                Type type = new TypeToken<Map<String, List<Integer>>>(){}.getType();
+                Map<String, List<Integer>> loadedQueues = gson.fromJson(json, type);
+
+                if (loadedQueues != null) {
+                    // Convert to CopyOnWriteArrayList for thread safety
+                    loadedQueues.forEach((queueName, items) -> {
+                        CopyOnWriteArrayList<Integer> threadSafeList = new CopyOnWriteArrayList<>(items);
+                        queues.put(queueName, threadSafeList);
+                    });
+                    System.out.println("Loaded " + loadedQueues.size() + " queues from disk");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to load queues: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Load client offsets from disk
+     */
+    private void loadClientOffsets() {
+        try {
+            File file = new File(OFFSETS_FILE);
+            if (file.exists()) {
+                String json = new String(Files.readAllBytes(file.toPath()));
+                Type type = new TypeToken<Map<Integer, Map<String, Integer>>>(){}.getType();
+                Map<Integer, Map<String, Integer>> loadedOffsets = gson.fromJson(json, type);
+
+                if (loadedOffsets != null) {
+                    // Convert to ConcurrentHashMap for thread safety
+                    loadedOffsets.forEach((clientId, offsets) -> {
+                        ConcurrentHashMap<String, Integer> threadSafeMap = new ConcurrentHashMap<>(offsets);
+                        clientOffsets.put(clientId, threadSafeMap);
+                    });
+                    System.out.println("Loaded offsets for " + loadedOffsets.size() + " clients from disk");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to load client offsets: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Persist current state to disk
+     */
+    public void persistState() {
+        persistQueues();
+        persistClientOffsets();
+    }
+
+    /**
+     * Persist queues to disk
+     */
+    private void persistQueues() {
+        try {
+            String json = gson.toJson(queues);
+            Files.write(Paths.get(QUEUES_FILE), json.getBytes());
+        } catch (IOException e) {
+            System.err.println("Failed to persist queues: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Persist client offsets to disk
+     */
+    private void persistClientOffsets() {
+        try {
+            String json = gson.toJson(clientOffsets);
+            Files.write(Paths.get(OFFSETS_FILE), json.getBytes());
+        } catch (IOException e) {
+            System.err.println("Failed to persist client offsets: " + e.getMessage());
+        }
+    }
+    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        // Recreate the Gson instance after deserialization
+        gson = new GsonBuilder().setPrettyPrinting().create();
+    }
+
 
 
     /// Returns the next client id available for the system
@@ -57,6 +183,7 @@ public class SharedState implements Serializable {
     /// Adds an item to the queue identified by queueName.
     public void addToQueue(String queueName, int item) {
         getQueue(queueName).add(item);
+        persistQueues();
     }
 
 
@@ -71,6 +198,7 @@ public class SharedState implements Serializable {
     /// Updates the offset for a specific client and queue.
     public void updateClientOffset(int clientId, String queueName, int newOffset) {
         getClientOffsets(clientId).put(queueName, newOffset);
+        persistClientOffsets();
     }
 
     /// Retrieves the offset for a specific client and queue.
