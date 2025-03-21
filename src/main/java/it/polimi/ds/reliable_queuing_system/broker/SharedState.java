@@ -222,28 +222,10 @@ public class SharedState implements Serializable {
     }
 
     /// Adds a new broker with given id and address into the known brokers map.
-   /* public void addBrokerAddress(int brokerId, Address address) {
-        knownBrokers.put(brokerId, address);
-    }*/
     public void addBrokerAddress(int brokerId, Address address) {
-        // Check if this address already exists with a different broker ID
-        for (Map.Entry<Integer, Address> entry : knownBrokers.entrySet()) {
-            Address existingAddress = entry.getValue();
-            if (existingAddress.ip().equals(address.ip()) &&
-                    Objects.equals(existingAddress.port(), address.port())) {
-                if (entry.getKey() != brokerId) {
-                    System.out.println("[WARNING]: Duplicate address detected! Address " +
-                            address + " already exists with broker ID " + entry.getKey() +
-                            ". Not adding duplicate with ID " + brokerId);
-                    return; // Don't add the duplicate
-                }
-            }
-        }
-
-        // If we get here, either it's not a duplicate or it's updating the same broker ID
-        System.out.println("[INFO]: Added broker " + brokerId + " with address " + address);
         knownBrokers.put(brokerId, address);
     }
+
 
     /// Removes a broker and its address from the known brokers map.
     public void removeBrokerAddress(int brokerId) {
@@ -329,37 +311,6 @@ public class SharedState implements Serializable {
         return log.size();
     }
 
-    /// Updates this shared state using data from another SharedState instance.
-    /// Copies over queue contents, client offsets, known brokers, leaderId, and log entries.
-    public void updateFrom(SharedState other) {
-        // Update next available IDs
-        this.nextClientIdAvailable.set(Math.max(this.nextClientIdAvailable.get(), other.nextClientIdAvailable.get()));
-        this.nextBrokerIdAvailable.set(Math.max(this.nextBrokerIdAvailable.get(), other.nextBrokerIdAvailable.get()));
-
-        // Update queues
-        other.queues.forEach((key, list) -> {
-            this.queues.putIfAbsent(key, new CopyOnWriteArrayList<>());
-            this.queues.get(key).addAll(list);
-        });
-
-        // Update client offsets
-        other.clientOffsets.forEach((clientId, offsets) -> {
-            this.clientOffsets.putIfAbsent(clientId, new ConcurrentHashMap<>());
-            this.clientOffsets.get(clientId).putAll(offsets);
-        });
-
-        // Update known brokers
-        this.knownBrokers.putAll(other.knownBrokers);
-
-        // Update leader information
-        this.leaderId.set(other.leaderId.get());
-
-        // Update log entries
-        this.log.addAll(other.log);
-
-        this.lastHeartbeatFromLeader = System.currentTimeMillis();
-    }
-
     // Called by follower when it receives a heartbeat from the leader
     public void updateLastHeartbeatReceived(int followerId) {
         lastHeartbeatFromLeader = System.currentTimeMillis();
@@ -393,12 +344,12 @@ public class SharedState implements Serializable {
                 // Increment missed heartbeats counter
                 int missed = missedHeartbeats.getOrDefault(brokerId, 0) + 1;
                 missedHeartbeats.put(brokerId, missed);
-                // Mark broker as removed or handle re-election logic
-                // Only remove after missing multiple heartbeats (at least 2)
+                // Mark broker as removed
+                // Only remove after missing multiple heartbeats (at least 3)
                 if (missed >= 3) {
                     System.out.println("Leader: Broker " + brokerId + " missed " + missed +
                             " heartbeats, removing...");
-                    removedBrokers.add(brokerId); // Add to the list of removed brokers
+                    removedBrokers.add(brokerId);
                     removeBrokerAddress(brokerId);
                     missedHeartbeats.remove(brokerId);
 
@@ -415,6 +366,7 @@ public class SharedState implements Serializable {
     public boolean checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
         if (getLeaderId() == myId) {
             // I'm the leader, can't timeout myself
+            System.out.println("NON DOVREBBE MAI ENTRARE QUI!");
             return false;
         }
         long now = System.currentTimeMillis();
