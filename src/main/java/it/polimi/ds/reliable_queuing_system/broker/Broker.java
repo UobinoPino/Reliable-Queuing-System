@@ -2,7 +2,6 @@ package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
-import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -12,6 +11,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Broker {
     private static final Scanner scanner = new Scanner(System.in);
@@ -30,7 +30,9 @@ public class Broker {
     private static Thread heartbeatMonitorThread;
 
     // Election-related variables
-    private static volatile boolean electionInProgress = false;
+    private static AtomicBoolean electionInProgress = new AtomicBoolean(false);
+
+//    private static volatile boolean electionInProgress = false;
     private static volatile int currentBestCandidate = -1;
     private static volatile int currentBestLogLength = -1;
     private static final Set<Integer> receivedAcks = Collections.synchronizedSet(new HashSet<>());
@@ -51,7 +53,7 @@ public class Broker {
             brokerId = sharedState.getNewBrokerId();
             sharedState.addBrokerAddress(brokerId, brokerAddress);
             //TODO: print the brokerId and address
-            System.out.println("First: Broker " + brokerId + " started with address: " + brokerAddress);
+            System.out.println("[INFO]: First, Broker " + brokerId + " started with address: " + brokerAddress);
             sharedState.setNewLeaderId(brokerId);
 
             // Start heartbeat mechanism for the leader
@@ -76,7 +78,11 @@ public class Broker {
         }
 
         try(ServerSocket serverSocket = new ServerSocket(brokerAddress.port())) {
-            System.out.println("Broker ready to receive messages at port: " + brokerAddress.port());
+            System.out.println("[INFO]: Broker ready to receive messages at port: " + brokerAddress.port());
+
+            HeartbeatManager heartbeatManager = new HeartbeatManager(brokerId, sharedState, electionInProgress);
+            LogManager logManager = new LogManager(brokerId, sharedState);
+            MessageDispatcher messageDispatcher = new MessageDispatcher(brokerId, sharedState, heartbeatManager, logManager);
 
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
@@ -88,35 +94,16 @@ public class Broker {
                     if (brokerState == BrokerState.WAITING_JOIN) {
                         if (message instanceof BrokerJoinResponse brokerJoinResponse) {
                             brokerId = brokerJoinResponse.newBrokerId();
-                            System.out.println("Not first: Broker " + brokerId + " started with address: " + brokerAddress);
+                            System.out.println("[INFO]: Not first, Broker " + brokerId + " started with address: " + brokerAddress);
                             sharedState = brokerJoinResponse.sharedState();
                             brokerState = BrokerState.READY;
-
-                            // Start heartbeat mechanism
-                            startHeartbeatMechanism();
                         }
                         else {
                             System.out.println("[INFO]: Received message before joining the cluster. It will be ignored.");
                         }
                     }
                     else {
-                        switch (message) {
-                            case EntryPropagation msg -> handleEntryPropagation(msg);
-                            case EntryPropagationAck msg -> handleEntryPropagationAck(msg);
-                            case EntryCommit msg -> handleEntryCommit(msg);
-                            case BrokerJoinRequest msg -> handleBrokerJoinRequest(msg);
-                            case ClientIdRequest msg -> handleClientIdRequest(msg);
-                            case ReadRequest msg -> handleReadRequest(msg);
-                            case ClientOffsetsUpdate msg -> handleClientOffsetsUpdate(msg);
-                            case WriteRequest msg -> handleWriteRequest(msg);
-                            case Heartbeat msg -> handleHeartbeat(msg);
-                            case HeartbeatAck msg -> handleHeartbeatAck(msg);
-                            case BrokerRemoval msg -> handleBrokerRemoval(msg);
-                            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
-                            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
-                            case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
-                            default -> throw new ClassNotFoundException();
-                        }
+                        messageDispatcher.dispatch(message);
                     }
                 } catch (ClassNotFoundException | ClassCastException ignored) {
                     System.out.println("[INFO]: Unknown message received, it will be ignored.");
@@ -190,350 +177,9 @@ public class Broker {
         return new Address(addr[0], Integer.parseInt(addr[1]));
     }
 
-    /// Returns whether this broker is the current leader of the system or not
-    private static boolean isLeader() {
-        return sharedState.isLeader(brokerId);
-    }
-
-    /// Forwards the given message to the current system leader
-    private static void forwardMessageToLeader(Message msg) {
-        Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
-
-        try(Socket socket = new Socket(leaderAddr.ip(), leaderAddr.port())) {
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(msg);
-            out.flush();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-            //TODO: replace with proper error handling
-            // (maybe it should trigger a new election?)
-        }
-    }
-
-    /// Broadcasts the given [Message] to all other brokers in the system
-    private static void broadcastMessage(Message message) {
-        Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
-
-        for (Integer id : brokerAddresses.keySet()) {
-            if (!id.equals(brokerId)) {
-                Address addr = brokerAddresses.get(id);
-                try(Socket socket = new Socket(addr.ip(), addr.port())) {
-                    ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                    out.writeObject(message);
-                    out.flush();
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                    //TODO: replace with proper error handling
-                    // (maybe it should trigger node removal?)
-                }
-            }
-        }
-    }
-
-    /// Send the given [Message] to the given [Address]
-    private static void sendMessage(Address address, Message message) {
-        try(Socket socket = new Socket(address.ip(), address.port())) {
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(message);
-            out.flush();
-        } catch (IOException e) {
-
-            System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
-
-
-
-        }
-    }
-
     //endregion
 
-
-    //region MESSAGE HANDLING FUNCTIONS
-
-    private static void handleEntryPropagation(EntryPropagation msg) {
-        if (!isLeader()) {
-            // store the entry as waiting for commit
-            sharedState.addWaitingCommitEntry(msg.logEntry());
-
-            // send an ACK to the leader
-            Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
-            sendMessage(leaderAddr, new EntryPropagationAck(msg.logEntry()));
-        }
-    }
-
-    private static void handleEntryPropagationAck(EntryPropagationAck msg) {
-        if (isLeader()) {
-            if(sharedState.isEntryWaitingAck(msg.logEntry())) {
-                // commit the entry locally
-                sharedState.commitEntry(msg.logEntry());
-
-                // perform the operation described in the log entry
-                performEntryOperation(msg.logEntry());
-
-                // broadcast the EntryCommit message
-                broadcastMessage(new EntryCommit(msg.logEntry()));
-            }
-        }
-    }
-
-    private static void handleEntryCommit(EntryCommit msg) {
-        if (!isLeader()) {
-            // commit the entry locally
-            sharedState.commitEntry(msg.logEntry());
-
-            // perform the operation described in the log entry
-            performEntryOperation(msg.logEntry());
-        }
-    }
-
-    private static void handleBrokerJoinRequest(BrokerJoinRequest msg) {
-        if (isLeader()) {
-            // create a new log entry for the broker join
-            LogEntry newEntry = new LogEntry(sharedState.getLogLength(), msg);
-
-            // if multi-broker system, store the entry as waiting for ACK and propagate it
-            if (sharedState.getBrokersCount() > 1) {
-                sharedState.addWaitingAckEntry(newEntry);
-                broadcastMessage(new EntryPropagation(newEntry));
-            }
-            // else (single-broker system) commit the entry and perform the id assignment operation
-            else {
-                sharedState.commitEntry(newEntry);
-                addBroker(msg);
-            }
-        }
-        else {
-            forwardMessageToLeader(msg);
-        }
-    }
-
-    private static void handleClientIdRequest(ClientIdRequest msg) {
-        if (isLeader()) {
-            // create a new log entry
-            LogEntry newEntry = new LogEntry(sharedState.getLogLength(), msg);
-
-            // if multi-broker system, store the entry as waiting for ACK and propagate it
-            if (sharedState.getBrokersCount() > 1) {
-                sharedState.addWaitingAckEntry(newEntry);
-                broadcastMessage(new EntryPropagation(newEntry));
-            }
-            // else (single-broker system) commit the entry and perform the id assignment operation
-            else {
-                sharedState.commitEntry(newEntry);
-                assignClientId(msg);
-            }
-        }
-        else {
-            forwardMessageToLeader(msg);
-        }
-    }
-
-    private static void handleReadRequest(ReadRequest msg) {
-        // retrieve the values to be returned to the client
-        List<Integer> valuesToReturn = new ArrayList<>();
-        List<Integer> requestedQueue = sharedState.getQueue(msg.queueName());
-        if(!requestedQueue.isEmpty()) {
-            int clientOffset = sharedState.getClientOffset(msg.clientId(), msg.queueName());
-            if (clientOffset < requestedQueue.size()) {
-                valuesToReturn.addAll(requestedQueue.subList(clientOffset, requestedQueue.size()));
-            }
-        }
-
-        // send the ReadResponse to the client
-        sendMessage(msg.clientAddress(), new ReadResponse(msg.clientId(), msg.operationId(), valuesToReturn));
-
-        // create a new ClientOffsetUpdate message and handle it accordingly
-        ClientOffsetsUpdate offsetsUpdateMsg = new ClientOffsetsUpdate(msg.queueName(), requestedQueue.size(), msg.clientId(), msg.operationId(), msg.clientAddress());
-        handleClientOffsetsUpdate(offsetsUpdateMsg);
-    }
-
-    private static void handleClientOffsetsUpdate(ClientOffsetsUpdate msg) {
-        if(isLeader()) {
-            // create new log entry for the offset update
-            LogEntry newEntry = new LogEntry(sharedState.getLogLength(), msg);
-
-            // if multi-broker system, store the entry as waiting for ACK and propagate it
-            if (sharedState.getBrokersCount() > 1) {
-                sharedState.addWaitingAckEntry(newEntry);
-                broadcastMessage(new EntryPropagation(newEntry));
-            }
-            // else (single-broker system) commit the entry and perform the offset update
-            else {
-                sharedState.commitEntry(newEntry);
-                updateClientOffset(msg);
-            }
-        }
-        else {
-            forwardMessageToLeader(msg);
-        }
-    }
-
-    private static void handleWriteRequest(WriteRequest msg) {
-        if(isLeader()) {
-            // create new log entry for the write operation
-            LogEntry newEntry = new LogEntry(sharedState.getLogLength(), msg);
-
-            // if multi-broker system store entry as waiting for ACK and propagate it
-            if(sharedState.getBrokersCount() > 1) {
-                sharedState.addWaitingAckEntry(newEntry);
-                broadcastMessage(new EntryPropagation(newEntry));
-            }
-            // else (single-broker system) commit it and perform the write
-            else {
-                sharedState.commitEntry(newEntry);
-                writeValue(msg);
-            }
-        }
-        else {
-            forwardMessageToLeader(msg);
-        }
-    }
-
-    private static void handleHeartbeat(Heartbeat heartbeat) {
-        System.out.println("[INFO]: Received heartbeat from leader");
-
-        // Update timestamp in shared state
-        sharedState.updateLastHeartbeatReceived(brokerId);
-
-        try {
-            // Identify which broker sent the heartbeat
-            Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
-            sendMessage(leaderAddr, new HeartbeatAck(brokerId));  // Include our broker ID in the ack
-        } catch (Exception e) {
-            System.out.println("[ERROR]: Failed to send heartbeat acknowledgment: " + e.getMessage());
-        }
-    }
-
-    private static void handleHeartbeatAck(HeartbeatAck heartbeatAck) {
-        if (isLeader()) {
-            Integer followerId = heartbeatAck.brokerId();
-            if (followerId != null) {
-                sharedState.updateLastHeartbeatAckReceived(followerId);
-                System.out.println("[INFO]: Received heartbeat acknowledgment from broker " + followerId);
-            } else {
-                System.out.println("[WARNING]: Received heartbeat acknowledgment without broker ID");
-            }
-        }
-    }
-    private static void handleBrokerRemoval(BrokerRemoval msg) {
-        int removedBrokerId = msg.brokerId();
-
-        // Only process if we're not the leader (leader already removed it)
-        if (!isLeader()) {
-            System.out.println("Follower " + brokerId + ": Received broker removal notification for broker " + removedBrokerId);
-            sharedState.removeBrokerAddress(removedBrokerId);
-        }
-    }
-
-    private static void startHeartbeatMechanism() {
-        stopHeartbeatThreads();
-
-        if (isLeader()) {
-            startHeartbeatSender();
-        } else {
-            startHeartbeatMonitor();
-        }
-    }
-
-    private static void stopHeartbeatThreads() {
-        if (heartbeatSenderThread != null) {
-            heartbeatSenderThread.interrupt();
-        }
-        if (heartbeatMonitorThread != null) {
-            heartbeatMonitorThread.interrupt();
-        }
-    }
-
- private static void startHeartbeatSender() {
-     heartbeatSenderThread = new Thread(() -> {
-         try {
-             System.out.println("Leader " + brokerId + ": Starting heartbeat sender thread");
-             Set<Integer> knownFailedBrokers = new HashSet<>();
-
-             // Get my own address once for comparison
-             Address myAddress = sharedState.getBrokerAddress(brokerId);
-             if (myAddress == null) {
-                 System.out.println("[ERROR]: Cannot find my own address in broker list");
-                 return;
-             }
-
-             while (!Thread.interrupted()) {
-                 Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
-
-                 knownFailedBrokers.removeIf(id -> !brokerAddresses.containsKey(id));
-
-                 // Send heartbeat to all active followers
-                 for (Integer id : brokerAddresses.keySet()) {
-                     Address followerAddr = brokerAddresses.get(id);
-
-                     // Skip myself by ID
-                     if (id.equals(brokerId) ) {
-                         continue;
-                     }
-
-                     if (!knownFailedBrokers.contains(id) ) {
-                         try {
-                             System.out.println("Leader " + brokerId + ": Sending heartbeat to broker " + id);
-                             Socket socket = new Socket(followerAddr.ip(), followerAddr.port());
-                             socket.setSoTimeout(1000);
-                             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                             out.writeObject(new Heartbeat());
-                             out.flush();
-                             socket.close();
-                         } catch (Exception e) {
-                             System.out.println("[WARNING]: Failed to send heartbeat to broker " + id + ": " + e.getMessage());
-                         }
-                     }
-                 }
-
-                 // Check for follower timeouts
-                 List<Integer> removedBrokers = sharedState.checkFollowerTimeouts(HEARTBEAT_TIMEOUT_MS);
-
-                 // Process broker removals
-                 if (!removedBrokers.isEmpty()) {
-                     System.out.println("Leader " + brokerId + ": Removing brokers: " + removedBrokers);
-                     knownFailedBrokers.addAll(removedBrokers);
-                 }
-
-                 Thread.sleep(HEARTBEAT_INTERVAL_MS);
-             }
-         } catch (InterruptedException e) {
-             System.out.println("Leader " + brokerId + ": Heartbeat sender thread interrupted");
-         } catch (Exception e) {
-             System.out.println("Leader " + brokerId + ": Error in heartbeat sender: " + e.getMessage());
-         }
-     });
-     heartbeatSenderThread.setDaemon(true);
-     heartbeatSenderThread.start();
- }
-
-
-    private static void startHeartbeatMonitor() {
-        heartbeatMonitorThread = new Thread(() -> {
-            try {
-                while (!Thread.interrupted()) {
-                    // Check if leader has timed out
-                    boolean leaderFailed = !electionInProgress && sharedState.checkLeaderTimeout(brokerId, HEARTBEAT_TIMEOUT_MS);
-                    if (leaderFailed) {
-                        synchronized (electionLock) {
-                            if (!electionInProgress) {
-                                electionInProgress = true;
-                                // Add random delay to prevent all followers starting election at once
-                                Thread.sleep(random.nextInt(1000));
-                                startLeaderElection();
-                            }
-                        }
-                    }
-
-                    Thread.sleep(HEARTBEAT_TIMEOUT_MS / 3);
-                }
-            } catch (InterruptedException e) {
-                // Exit gracefully
-            }
-        });
-        heartbeatMonitorThread.setDaemon(true);
-        heartbeatMonitorThread.start();
-    }
+    //TODO: replace the (now broken) functions below with their proper implementation after refactoring
 
     private static void startLeaderElection() {
         System.out.println("Broker " + brokerId + ": Starting leader election");
@@ -765,84 +411,4 @@ public class Broker {
 
       }
   }
-
-    //endregion
-
-
-    //region ENTRY OPERATIONS
-
-    private static void performEntryOperation(LogEntry entry) {
-        Message msg = entry.message();
-        switch (msg) {
-            case BrokerJoinRequest m -> addBroker(m);
-            case ClientIdRequest m -> assignClientId(m);
-            case ClientOffsetsUpdate m -> updateClientOffset(m);
-            case WriteRequest m -> writeValue(m);
-            //TODO: add all the other actions that should be performed by the leader
-            default -> throw new IllegalStateException("Unexpected value: " + msg);  //TODO: replace with proper error handling
-        }
-    }
-
-   private static void addBroker(BrokerJoinRequest req) {
-       // First check if this broker's address already exists
-       int newBrokerId = -1;
-       Map<Integer, Address> existingBrokers = sharedState.getBrokerAddresses();
-
-       // Check if the address already exists in the system
-       for (Map.Entry<Integer, Address> entry : existingBrokers.entrySet()) {
-           Address existingAddr = entry.getValue();
-           if (existingAddr.ip().equals(req.brokerAddress().ip()) &&
-                   Objects.equals(existingAddr.port(), req.brokerAddress().port())) {
-               // Address already exists, use the existing broker ID
-               newBrokerId = entry.getKey();
-               System.out.println("[INFOo]: Broker with address " + req.brokerAddress() +
-                       " already exists with ID " + newBrokerId);
-               break;
-           }
-       }
-
-       // If no existing broker with this address, get a new broker ID
-       if (newBrokerId == -1) {
-           newBrokerId = sharedState.getNewBrokerId();
-           // Add the broker to the list in the shared state
-           sharedState.addBrokerAddress(newBrokerId, req.brokerAddress());
-       }
-
-       // If leader, return a BrokerJoinResponse to the requesting broker
-       if (isLeader()) {
-           sendMessage(req.brokerAddress(), new BrokerJoinResponse(newBrokerId, sharedState));
-       }
-   }
-
-    private static void assignClientId(ClientIdRequest req) {
-        // get a new client id from the shared state
-        int clientId = sharedState.getNewClientId();
-
-        // if leader, return this id to the requesting client
-        if (isLeader()) {
-            sendMessage(req.clientAddress(), new ClientIdAssignment(clientId));
-        }
-    }
-
-    private static void updateClientOffset(ClientOffsetsUpdate req) {
-        // update the offsets
-        sharedState.updateClientOffset(req.clientId(), req.queueName(), req.newOffset());
-
-        // if leader, return the read confirmation to the requesting client
-        if(isLeader()){
-            sendMessage(req.clientAddress(), new ReadConfirmation(req.operationId()));
-        }
-    }
-
-    private static void writeValue(WriteRequest req) {
-        // write the new value in the queue
-        sharedState.addToQueue(req.queueName(), req.value());
-
-        // if leader, send the WriteResponse to the requesting client
-        if(isLeader()){
-            sendMessage(req.clientAddress(), new WriteResponse(req.operationId()));
-        }
-    }
-
-    //endregion
 }

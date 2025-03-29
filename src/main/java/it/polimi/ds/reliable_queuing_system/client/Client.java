@@ -21,7 +21,7 @@ public class Client {
     private static Integer nextOperationId = 0;
 
     private static List<Integer> pendingReadValues;
-    private static ClientState clientState = ClientState.READY;
+    private static ClientState clientState = ClientState.READY;  //TODO: check if it needs locks to be thread safe
 
     public static void main(String[] args) throws InterruptedException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: CLIENT ========");

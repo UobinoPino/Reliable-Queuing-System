@@ -37,14 +37,6 @@ public class SharedState implements Serializable {
     private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
     private final List<LogEntry> log = new CopyOnWriteArrayList<>();
 
-    // Track last time we received a heartbeat from the leader
-    private volatile long lastHeartbeatFromLeader = System.currentTimeMillis();
-    // For the leader, track the time of the last ack from each broker
-    private final Map<Integer, Long> lastHeartbeatAckMap = new ConcurrentHashMap<>();
-    // Add this field to the SharedState class
-    private final Map<Integer, Integer> missedHeartbeats = new ConcurrentHashMap<>();
-    private final Map<Integer, Integer> missedLeaderHeartbeats = new ConcurrentHashMap<>();
-
     // File paths for persistence
     private static final String DATA_DIR = "broker_data";
     private static final String QUEUES_FILE = DATA_DIR + "/queues.json";
@@ -240,8 +232,6 @@ public class SharedState implements Serializable {
     /// Sets the id of the current leader broker to the given value.
     public void setNewLeaderId(int leaderId) {
         this.leaderId.set(leaderId);
-
-        lastHeartbeatFromLeader = System.currentTimeMillis();
     }
 
     /// Returns whether the broker with the given id is the leader.
@@ -310,86 +300,4 @@ public class SharedState implements Serializable {
     public int getLogLength() {
         return log.size();
     }
-
-    // Called by follower when it receives a heartbeat from the leader
-    public void updateLastHeartbeatReceived(int followerId) {
-        lastHeartbeatFromLeader = System.currentTimeMillis();
-        // Reset missed heartbeats counter when we receive a heartbeat
-        missedLeaderHeartbeats.put(followerId, 0);
-    }
-
-    // Called by the leader when it receives an ack from a follower
-    public void updateLastHeartbeatAckReceived(int followerId) {
-        lastHeartbeatAckMap.put(followerId, System.currentTimeMillis());
-        // Reset missed heartbeats counter when we receive an ack
-        missedHeartbeats.put(followerId, 0);
-    }
-
-    // Leader checks if followers have timed out
-    public List<Integer> checkFollowerTimeouts(long heartbeatTimeoutMs) {
-        long now = System.currentTimeMillis();
-        List<Integer> removedBrokers = new ArrayList<>();
-
-        for (Integer brokerId : knownBrokers.keySet()) {
-            if (brokerId.equals(this.getLeaderId())) {
-                continue; // skip self
-            }
-            Long lastAckTime = lastHeartbeatAckMap.get(brokerId);
-            if (lastAckTime == null) {
-                // If we never got an ack, treat as potential failure if enough time has passed
-                lastAckTime = 0L;
-            }
-            long diff = now - lastAckTime;
-            if (diff > 5*heartbeatTimeoutMs) {
-                // Increment missed heartbeats counter
-                int missed = missedHeartbeats.getOrDefault(brokerId, 0) + 1;
-                missedHeartbeats.put(brokerId, missed);
-                // Mark broker as removed
-                // Only remove after missing multiple heartbeats (at least 3)
-                if (missed >= 3) {
-                    System.out.println("Leader: Broker " + brokerId + " missed " + missed +
-                            " heartbeats, removing...");
-                    removedBrokers.add(brokerId);
-                    removeBrokerAddress(brokerId);
-                    missedHeartbeats.remove(brokerId);
-
-                } else {
-                    System.out.println("Leader: Broker " + brokerId + " missed heartbeat " +
-                            missed + " of 3 required before removal");
-                }
-            }
-        }
-        return removedBrokers;
-    }
-
-    // Follower checks if the leader has timed out
-    public boolean checkLeaderTimeout(int myId, long heartbeatTimeoutMs) {
-        if (getLeaderId() == myId) {
-            // I'm the leader, can't timeout myself
-            System.out.println("NON DOVREBBE MAI ENTRARE QUI!");
-            return false;
-        }
-        long now = System.currentTimeMillis();
-        long diff = now - lastHeartbeatFromLeader;
-        if (diff > 5*heartbeatTimeoutMs) {
-            // Increment missed heartbeats counter
-            int missed = missedLeaderHeartbeats.getOrDefault(myId, 0) + 1;
-            missedLeaderHeartbeats.put(myId, missed);
-
-            // Only consider leader failed after multiple missed heartbeats
-            if (missed >= 3) {
-                // Follower suspects leader is dead
-                System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
-                        " has missed " + missed + " heartbeats. Consider leader failed. (Starting leader election)");
-                return true; // Trigger leader election
-            } else {
-                System.out.println("Follower " + myId + ": Leader " + getLeaderId() +
-                        " missed heartbeat " + missed + " of 3 required before considered failed");
-                // If we are not sure yet, just return false
-
-            }
-        }
-        return false;
-    }
-
 }
