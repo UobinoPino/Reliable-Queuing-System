@@ -6,6 +6,7 @@ import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.util.Map;
 
+/// A class that will take care of committing log entries.
 public class LogManager {
     public LogManager(int brokerId, SharedState sharedState) {
         this.brokerId = brokerId;
@@ -54,7 +55,7 @@ public class LogManager {
                     existingAddr.port().equals(req.brokerAddress().port())) {
                 // Address already exists, use the existing broker ID
                 brokerAlreadyPresent = true;
-                System.out.println("[INFOo]: Broker with address " + req.brokerAddress() +
+                System.out.println("[INFO]: Broker with address " + req.brokerAddress() +
                         " already exists with ID " + entry.getKey());
                 break;
             }

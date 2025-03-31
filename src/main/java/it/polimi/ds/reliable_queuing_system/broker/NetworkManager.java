@@ -8,6 +8,7 @@ import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.util.Map;
 
+/// A class containing useful static methods for inter-broker communication.
 public class NetworkManager {
     /// Forwards the given message to the current system leader
     public static void forwardMessageToLeader(Message msg, int myId, SharedState sharedState) {
@@ -46,7 +47,8 @@ public class NetworkManager {
                     out.writeObject(message);
                     out.flush();
                 } catch (IOException e) {
-                    throw new RuntimeException(e);
+                    System.out.println("[ERROR]: Unable to broadcast the message to node " + id + ". It has probably crashed");
+//                    throw new RuntimeException(e);
                     //TODO: replace with proper error handling
                     // (maybe it should trigger node removal?)
                 }

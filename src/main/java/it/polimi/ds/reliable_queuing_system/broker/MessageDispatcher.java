@@ -4,15 +4,18 @@ import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
+/// A class that will take care of handling messages received by the broker.
 public class MessageDispatcher {
-    public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager) {
+    public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager, ElectionInfo electionInfo) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
         this.heartbeatManager = heartbeatManager;
         this.logManager = logManager;
+        this.electionInfo = electionInfo;
+        this.delayedMessages = new ConcurrentLinkedQueue<>();
     }
 
     private final int brokerId;
@@ -20,8 +23,19 @@ public class MessageDispatcher {
     private final HeartbeatManager heartbeatManager;
     private final LogManager logManager;
 
+    private final ElectionInfo electionInfo;
+    private final Queue<Message> delayedMessages;
+
     /// Dispatch the given [Message] to its dedicated handler method.
     public void dispatch(Message message) throws ClassNotFoundException {
+        // if there is an election ongoing, ignore messages unrelated to the election,
+        // and store them so that they will be handled after the election
+        if (electionInfo.isElectionInProgress() && !isElectionRelated(message)) {
+            delayedMessages.add(message);
+            return;
+        }
+
+        // else, handle the message accordingly
         switch (message) {
             case EntryPropagation msg -> handleEntryPropagation(msg);
             case EntryPropagationAck msg -> handleEntryPropagationAck(msg);
@@ -46,6 +60,23 @@ public class MessageDispatcher {
         return sharedState.getLeaderId() == brokerId;
     }
 
+    /// Returns whether the given message is related to the election of a leader or not.
+    private boolean isElectionRelated(Message msg) {
+        return msg instanceof NewLeaderNomination || msg instanceof NewLeaderNominationAck || msg instanceof NewLeaderAnnouncement;
+    }
+
+    /// Returns true if the second candidate provided is better than the first one, false otherwise.
+    private boolean compareCandidates(int id1, int logLength1, int id2, int logLength2) {
+        if (logLength1 > logLength2) {
+            return false;
+        } else if (logLength1 < logLength2) {
+            return true;
+        } else {
+            return id2 > id1;
+        }
+    }
+
+    /// Handler method for received [EntryPropagation] messages.
     private void handleEntryPropagation(EntryPropagation msg) {
         if (!isLeader()) {
             // store the entry as waiting for commit
@@ -57,6 +88,7 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler method for received [EntryPropagationAck] messages.
     private void handleEntryPropagationAck(EntryPropagationAck msg) {
         if (isLeader()) {
             if(sharedState.isEntryWaitingAck(msg.logEntry())) {
@@ -70,6 +102,7 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler method for received [EntryCommit] messages.
     private void handleEntryCommit(EntryCommit msg) {
         if (!isLeader()) {
             // commit the entry locally
@@ -77,6 +110,8 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler method for received messages that doesn't need custom handler.
+    /// (They will be propagated and wait for an ack from another node).
     private void handleGenericRequest(Message msg) {
         if (isLeader()) {
             // create a new log entry for given request
@@ -97,6 +132,7 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler for received [ReadRequest] messages.
     private void handleReadRequest(ReadRequest msg) {
         // retrieve the values to be returned to the client
         List<Integer> valuesToReturn = new ArrayList<>();
@@ -116,6 +152,7 @@ public class MessageDispatcher {
         handleGenericRequest(offsetsUpdateMsg);
     }
 
+    /// Handler for received [BrokerRemoval] messages.
     private void handleBrokerRemoval(BrokerRemoval msg) {
         //TODO: maybe broker removal should be handled using log entries as well? Otherwise it wouldn't appear in the log...
 
@@ -126,6 +163,7 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler for received [Heartbeat] messages.
     private void handleHeartbeat(Heartbeat msg) {
         if (!isLeader()) {
             System.out.println("[INFO]: Received heartbeat from leader");
@@ -138,6 +176,7 @@ public class MessageDispatcher {
         }
     }
 
+    /// Handler for received [HeartbeatAck] messages.
     private void handleHeartbeatAck(HeartbeatAck msg) {
         if (isLeader()) {
             Integer followerId = msg.brokerId();
@@ -149,6 +188,118 @@ public class MessageDispatcher {
                 // (if so maybe we should check validity of parameters of all other messages)
                 System.out.println("[ERROR]: Received heartbeat acknowledgment without broker ID");
             }
+        }
+    }
+
+    /// Handler for received [NewLeaderNomination] messages.
+    private void handleNewLeaderNomination(NewLeaderNomination msg) {
+        System.out.println("[INFO]: Received leader nomination from broker " + msg.brokerId() + " with log length " + msg.logLength());
+
+        // If this is the first nomination received...
+        if (electionInfo.wasElectionInProgress()) {
+            // compare your log with the received one
+            int myLogLength = sharedState.getLogLength();
+
+            System.out.println("[INFO]: Comparing log lengths - mine: " + myLogLength + ", candidate (" + msg.brokerId() + "): " + msg.logLength());
+
+            boolean candidateIsBetter = compareCandidates(brokerId, myLogLength, msg.brokerId(), msg.logLength());
+
+            // if received is better, update best accordingly and send ACK
+            if (candidateIsBetter) {
+                System.out.println("[INFO]: Candidate is better, will send ACK");
+
+                electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
+
+                Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
+                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+            }
+            // else, set self as best and broadcast nomination
+            else {
+                System.out.println("[INFO]: I'm better, will broadcast nomination");
+
+                electionInfo.updateBestCandidate(brokerId, myLogLength);
+
+                NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+            }
+        }
+        // else (an election was already in progress)...
+        else {
+            System.out.println("[INFO]: Comparing log lengths - stored best ("+ electionInfo.getBestCandidate() +"): " + electionInfo.getBestCandidateLogLength() + ", candidate (" + msg.brokerId() + "): " + msg.logLength());
+
+            // compared received log with the stored best one
+            boolean candidateIsBetter = compareCandidates(electionInfo.getBestCandidate(), electionInfo.getBestCandidateLogLength(), msg.brokerId(), msg.logLength());
+
+            // if received is better, update best accordingly and send ACK
+            if (candidateIsBetter) {
+                System.out.println("[INFO]: Candidate is better, will send ACK");
+
+                electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
+
+                Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
+                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+            }
+            // else, simply ignore the nomination
+            else {
+                System.out.println("[INFO]: stored best is better, ignoring received nomination");
+            }
+        }
+    }
+
+    /// Handler for received [NewLeaderNominationAck] messages.
+    private void handleNewLeaderNominationAck(NewLeaderNominationAck msg) {
+        // if an election is in progress and I'm the best candidate...
+        if (electionInfo.isElectionInProgress() && electionInfo.getBestCandidate() == brokerId) {
+            // add the id of the sender to the set of received ACKs
+            electionInfo.addReceivedAck(msg.senderId());
+
+            System.out.println("[INFO]: Received nomination ACK from broker " + msg.senderId());
+
+            int receivedAcksCount = electionInfo.getReceivedAcksCount();
+            int BrokersCount = sharedState.getBrokersCount();
+
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + BrokersCount);
+
+            // if all ACKs have been received...
+            if (receivedAcksCount == BrokersCount) {  //TODO: is the total number of brokers necessary? or is the majority enough?
+                System.out.println("[INFO]: Consensus achieved. Becoming new leader");
+
+                // become leader
+                sharedState.setNewLeaderId(brokerId);
+
+                // broadcast new leader announcement
+                NetworkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId), brokerId, sharedState);
+
+                // terminate the election phase
+                electionInfo.stopElection();
+
+                // restart the heartbeat manager
+                heartbeatManager.restart();
+
+                // dispatch the received messages that had been delayed during the election
+                for (Message delayedMessage : delayedMessages) {
+                    try {
+                        dispatch(delayedMessage);
+                    } catch (ClassNotFoundException ignored) {
+                        System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handler for received [NewLeaderAnnouncement] messages.
+    private void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
+        if (electionInfo.isElectionInProgress()) {
+            System.out.println("[INFO]: Received leader announcement from broker " + msg.brokerId());
+
+            // update leader info in SharedState
+            sharedState.setNewLeaderId(msg.brokerId());
+
+            // terminate the election phase
+            electionInfo.stopElection();
+
+            // restart the heartbeat manager
+            heartbeatManager.restart();  //TODO: useless? since the role of the brokers who received the announcement should be remained follower as it was before...
         }
     }
 }

@@ -2,54 +2,50 @@ package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.BrokerRemoval;
 import it.polimi.ds.reliable_queuing_system.messages.Heartbeat;
+import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNomination;
+import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNominationAck;
+import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
+/// A class that will take care of the heartbeat mechanism to detect eventual crashes of other brokers.
 public class HeartbeatManager {
-    public HeartbeatManager(int brokerId, SharedState sharedState, AtomicBoolean electionInProgress) {
+    public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
-        this.electionInProgress = electionInProgress;
+        this.electionInfo = electionInfo;
         this.heartbeatThreadExecutor = Executors.newSingleThreadScheduledExecutor();
 
         this.lastHeartbeats = new ConcurrentHashMap<>();
         this.missedHeartbeats = new ConcurrentHashMap<>();
 
-        if (sharedState.getLeaderId() == brokerId) {
-            heartbeatThreadExecutor.scheduleAtFixedRate(this::heartbeatSenderTask, 0, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
-        } else {
-            // start the monitor task with a random delay to minimize simultaneous election triggering
-            Random random = new Random();
-            int randomDelayMs = random.nextInt(200);
-
-            heartbeatThreadExecutor.scheduleAtFixedRate(
-                this::heartbeatMonitorTask,
-                HEARTBEAT_INTERVAL_MS + randomDelayMs,
-                HEARTBEAT_INTERVAL_MS,
-                TimeUnit.MILLISECONDS
-            );
-        }
+        // start the heartbeat sender/monitor thread
+        restart();
     }
 
-    public static final long HEARTBEAT_INTERVAL_MS = 500;  //TODO: maybe increase?
-    public static final long HEARTBEAT_TIMEOUT_MS = 2000;  //TODO: maybe increase?
+    /// Interval at which the leader should send heartbeats to the followers.
+    public static final long HEARTBEAT_INTERVAL_MS = 5000;
+
+    /// Maximum time the leader should wait for HeartbeatAck from a follower before considering it missed.
+    public static final long HEARTBEAT_TIMEOUT_MS = 10000;  //TODO: maybe increase?
+
+    /// Maximum number of heartbeats that a follower can miss before being considered as crashed.
     public static final int MISSABLE_HEARTBEATS = 2;
 
     private final int brokerId;
     private final SharedState sharedState;
-    private final AtomicBoolean electionInProgress;
-    private final ScheduledExecutorService heartbeatThreadExecutor;
+    private final ElectionInfo electionInfo;
+    private ScheduledExecutorService heartbeatThreadExecutor;
 
     private final Map<Integer, Long> lastHeartbeats;
     private final Map<Integer, Integer> missedHeartbeats;
 
 
-    /// Updates the last time an `HeartBeat` message has been received from the leader.
+    /// Updates the last time an `Heartbeat` message has been received from the leader.
     public void updateLastHeartbeatReceived() {
         int leaderId = sharedState.getLeaderId();
         lastHeartbeats.put(leaderId, System.currentTimeMillis());
@@ -60,6 +56,27 @@ public class HeartbeatManager {
     public void updateLastHeartbeatAckReceived(int brokerId) {
         lastHeartbeats.put(brokerId, System.currentTimeMillis());
         missedHeartbeats.put(brokerId, 0);
+    }
+
+    /// Stops the current heartbeat thread execution and restarts it according to the current role of the broker
+    public void restart() {
+        heartbeatThreadExecutor.shutdownNow();
+        heartbeatThreadExecutor = Executors.newSingleThreadScheduledExecutor();
+
+        if (sharedState.getLeaderId() == brokerId) {
+            heartbeatThreadExecutor.scheduleAtFixedRate(this::heartbeatSenderTask, 0, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        } else {
+            // start the monitor task with a random delay to minimize simultaneous election triggering
+            Random random = new Random();
+            int randomDelayMs = random.nextInt(200);
+
+            heartbeatThreadExecutor.scheduleAtFixedRate(
+                    this::heartbeatMonitorTask,
+                    HEARTBEAT_INTERVAL_MS + randomDelayMs,
+                    HEARTBEAT_INTERVAL_MS,
+                    TimeUnit.MILLISECONDS
+            );
+        }
     }
 
     /// Task periodically executed by the leader to send an `Heartbeat` message to all followers
@@ -83,14 +100,21 @@ public class HeartbeatManager {
     /// Task periodically executed by the followers to check if the leader has crashed
     /// (and eventually start a new election).
     private void heartbeatMonitorTask() {
-        if (!electionInProgress.get()) {
+        if (!electionInfo.isElectionInProgress()) {
             // Check if the leader has timed out
             boolean leaderFailed = checkLeaderTimeout();
 
             if (leaderFailed) {
                 // if still no election is in progress, start the election
-                if (electionInProgress.compareAndSet(false, true)) {
-                    //TODO: start leader election
+                if (electionInfo.wasElectionInProgress()) {
+                    // start leader election by proposing self as candidate
+                    int myLogLength = sharedState.getLogLength();
+                    electionInfo.startElection(brokerId, myLogLength);
+                    NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
+                    // send to self an ACK for own nomination
+                    Address myAddress = sharedState.getBrokerAddress(brokerId);
+                    NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
                 }
                 else {
                     System.out.println("[INFO]: Leader failure detected but someone has already started an election in the meantime.");
@@ -124,11 +148,11 @@ public class HeartbeatManager {
                     System.out.println("[INFO]: Removing broker " + bId + "...");
                     removedBrokers.add(bId);
                     sharedState.removeBrokerAddress(bId);
-                    missedHeartbeats.remove(brokerId);
+                    missedHeartbeats.remove(bId);
                 }
                 else {
                     System.out.println("[INFO]: not removing yet.");
-                    missedHeartbeats.put(brokerId, missed);
+                    missedHeartbeats.put(bId, missed);
                 }
             }
         }
