@@ -207,22 +207,28 @@ public class MessageDispatcher {
 
             boolean candidateIsBetter = compareCandidates(brokerId, myLogLength, msg.brokerId(), msg.logLength());
 
-            // if received is better, update best accordingly and send ACK
+            // if received is better...
             if (candidateIsBetter) {
                 System.out.println("[INFO]: Candidate is better, will send ACK");
 
+                // update best-candidate accordingly
                 electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
 
+                // send ACK for the received nomination
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
                 NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
             }
-            // else, set self as best and broadcast nomination
+            // else...
             else {
                 System.out.println("[INFO]: I'm better, will broadcast nomination");
 
+                // set self as best candidate and broadcast nomination
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
-
                 NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
+                // send to self an ACK for own nomination
+                Address myAddress = sharedState.getBrokerAddress(brokerId);
+                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
             }
         }
         // else (an election was already in progress)...

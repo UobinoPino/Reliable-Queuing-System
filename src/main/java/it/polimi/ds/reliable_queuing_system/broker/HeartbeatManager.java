@@ -112,7 +112,6 @@ public class HeartbeatManager {
 
                     // start leader election by proposing self as candidate
                     int myLogLength = sharedState.getLogLength();
-//                    electionInfo.startElection(brokerId, myLogLength);
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
                     NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
