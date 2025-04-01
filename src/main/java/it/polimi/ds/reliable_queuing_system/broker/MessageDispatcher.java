@@ -197,6 +197,9 @@ public class MessageDispatcher {
 
         // If this is the first nomination received...
         if (electionInfo.wasElectionInProgress()) {
+            // remove the leader from the list of known brokers
+            sharedState.removeBrokerAddress(sharedState.getLeaderId());
+
             // compare your log with the received one
             int myLogLength = sharedState.getLogLength();
 

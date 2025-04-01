@@ -12,14 +12,6 @@ public class ElectionInfo {
     private final AtomicInteger bestCandidateLogLength = new AtomicInteger(0);
     private final Set<Integer> receivedAcks = ConcurrentHashMap.newKeySet();
 
-    /// Updates the election-related information to reflect the starting of a new leader election.
-    public void startElection(int bestId, int bestLogLength) {
-        electionInProgress.set(true);
-        bestCandidate.set(bestId);
-        bestCandidateLogLength.set(bestLogLength);
-        receivedAcks.clear();
-    }
-
     /// Resets the election-related information as they were before starting the new leader election.
     public void stopElection() {
         electionInProgress.set(false);
@@ -46,7 +38,8 @@ public class ElectionInfo {
     }
 
     /// Returns whether there was an election currently in progress or not,
-    /// and if there wasn't atomically changes the `electionInProgress` flag.
+    /// and if there wasn't starts it by atomically changing the
+    /// `electionInProgress` flag.
     ///
     /// **NOTE:** it doesn't update all the other flags, so the `startElection`
     /// method should still be called after!

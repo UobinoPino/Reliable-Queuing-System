@@ -107,9 +107,13 @@ public class HeartbeatManager {
             if (leaderFailed) {
                 // if still no election is in progress, start the election
                 if (electionInfo.wasElectionInProgress()) {
+                    // remove the leader from the list of known brokers
+                    sharedState.removeBrokerAddress(sharedState.getLeaderId());
+
                     // start leader election by proposing self as candidate
                     int myLogLength = sharedState.getLogLength();
-                    electionInfo.startElection(brokerId, myLogLength);
+//                    electionInfo.startElection(brokerId, myLogLength);
+                    electionInfo.updateBestCandidate(brokerId, myLogLength);
                     NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
                     // send to self an ACK for own nomination
@@ -183,8 +187,7 @@ public class HeartbeatManager {
                 // Follower suspects leader is dead
                 System.out.println("Considering leader failed. (Starting leader election)");
                 missedHeartbeats.remove(leaderId);
-                sharedState.removeBrokerAddress(leaderId);
-                return true; // Trigger leader election
+                return true;
             } else {
                 System.out.println("[INFO]: not considering failed yet.");
                 missedHeartbeats.put(leaderId, missed);
