@@ -25,7 +25,7 @@ public class Broker {
 
     private static BrokerState brokerState;
 
-    private static final ElectionInfo electionInfo = new ElectionInfo();
+    public static final ElectionInfo electionInfo = new ElectionInfo();
 
     public static void main(String[] args) {
         System.out.println("======== RELIABLE QUEUING SYSTEM: BROKER ========");

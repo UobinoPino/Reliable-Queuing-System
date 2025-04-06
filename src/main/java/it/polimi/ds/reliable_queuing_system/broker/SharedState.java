@@ -300,4 +300,14 @@ public class SharedState implements Serializable {
     public int getLogLength() {
         return log.size();
     }
+
+    public void replaceLog(List<LogEntry> newLog) {
+        log.clear();
+        log.addAll(newLog);
+        System.out.println("[INFO]: Log replaced with leader's log containing " + newLog.size() + " entries");
+    }
+
+    public List<LogEntry> getCompleteLog() {
+        return new ArrayList<>(log);
+    }
 }

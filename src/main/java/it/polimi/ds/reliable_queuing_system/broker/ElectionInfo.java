@@ -14,22 +14,6 @@ public class ElectionInfo {
     private final AtomicInteger bestCandidate = new AtomicInteger(-1);
     private final AtomicInteger bestCandidateLogLength = new AtomicInteger(0);
     private final Set<Integer> receivedAcks = ConcurrentHashMap.newKeySet();
-    private final Set<Integer> activeBrokersDuringElection = ConcurrentHashMap.newKeySet();
-
-
-    /// Updates the set of active brokers for this election
-    public void updateActiveBrokers(Set<Integer> activeBrokers) {
-        activeBrokersDuringElection.clear();
-        activeBrokersDuringElection.addAll(activeBrokers);
-        System.out.println("[INFO]: Active brokers during election updated: " + activeBrokersDuringElection);
-    }
-
-    /// Removes a broker from the active list during election
-    public void removeBrokerFromElection(int brokerId) {
-        if (activeBrokersDuringElection.remove(brokerId)) {
-            System.out.println("[INFO]: Broker " + brokerId + " removed from active election participants");
-        }
-    }
 
     /// Resets the election-related information as they were before starting the new leader election.
     public void stopElection() {
@@ -37,7 +21,7 @@ public class ElectionInfo {
         bestCandidate.set(-1);
         bestCandidateLogLength.set(0);
         receivedAcks.clear();
-        activeBrokersDuringElection.clear();
+      //  activeBrokersDuringElection.clear();
     }
 
     /// Updates the stored best-candidate with the given one.
@@ -82,14 +66,5 @@ public class ElectionInfo {
         return receivedAcks.size();
     }
 
-    /// Returns true if all active brokers have sent ACKs
-    public boolean hasAllActiveAcks() {
-        // All active brokers must send ACKs (not just a majority)
-        return receivedAcks.size() >= activeBrokersDuringElection.size();
-    }
 
-    /// Returns the set of active brokers during this election
-    public Set<Integer> getActiveBrokers() {
-        return new HashSet<>(activeBrokersDuringElection);
-    }
 }

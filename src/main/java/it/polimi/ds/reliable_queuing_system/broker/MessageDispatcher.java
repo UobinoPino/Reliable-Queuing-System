@@ -51,6 +51,7 @@ public class MessageDispatcher {
             case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
             case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
             case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
+            case LeaderLogSync msg -> handleLeaderLogSync(msg);
             default -> throw new ClassNotFoundException();
         }
     }
@@ -165,6 +166,12 @@ public class MessageDispatcher {
 
     /// Handler for received [Heartbeat] messages.
     private void handleHeartbeat(Heartbeat msg) {
+        // First check if an election is in progress
+        if (electionInfo.isElectionInProgress()) {
+            System.out.println("[INFO]: Ignoring heartbeat since an election is in progress");
+            return;
+        }
+
         if (!isLeader()) {
             System.out.println("[INFO]: Received heartbeat from leader");
 
@@ -172,7 +179,28 @@ public class MessageDispatcher {
             heartbeatManager.updateLastHeartbeatReceived();
 
             // Send HeartbeatAck to the leader
-            NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), brokerId, sharedState);
+            try {
+                NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), brokerId, sharedState);
+            } catch (RuntimeException e) {
+                System.out.println("[WARN]: Failed to send heartbeat acknowledgment. Leader may have crashed.");
+                // If we failed to connect to the leader, consider starting an election
+                if (!electionInfo.isElectionInProgress()) {
+                    // Initialize active brokers from sharedState for the election
+                    //electionInfo.updateActiveBrokers(sharedState.getBrokerAddresses().keySet());
+                    System.out.println("[INFO]: Initiating election due to connection failure to leader");
+                    // Similar logic to heartbeatMonitorTask - start election process
+                    sharedState.removeBrokerAddress(sharedState.getLeaderId());
+
+                    if (electionInfo.wasElectionInProgress()) {
+                        int myLogLength = sharedState.getLogLength();
+                        electionInfo.updateBestCandidate(brokerId, myLogLength);
+                        NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
+                        Address myAddress = sharedState.getBrokerAddress(brokerId);
+                        NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
+                    }
+                }
+            }
         }
     }
 
@@ -200,8 +228,6 @@ public class MessageDispatcher {
             // remove the leader from the list of known brokers
             sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
-            // Initialize the active brokers for this election
-            electionInfo.updateActiveBrokers(sharedState.getBrokerAddresses().keySet());
 
             // compare your log with the received one
             int myLogLength = sharedState.getLogLength();
@@ -267,13 +293,13 @@ public class MessageDispatcher {
             System.out.println("[INFO]: Received nomination ACK from broker " + msg.senderId());
 
             int receivedAcksCount = electionInfo.getReceivedAcksCount();
-            Set<Integer> activeBrokers = electionInfo.getActiveBrokers();
-            int activeBrokersCount = activeBrokers.size();
+            int activeBrokersCount = sharedState.getBrokersCount();
+
 
             System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
 
             // if all ACKs have been received...
-            if (electionInfo.hasAllActiveAcks()) {  //TODO: is the total number of brokers necessary? or is the majority enough?
+            if (receivedAcksCount >= activeBrokersCount) {  //TODO: is the total number of brokers necessary? or is the majority enough?
                 System.out.println("[INFO]: Consensus achieved. Becoming new leader");
                 System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount +
                         " active brokers. Becoming new leader");
@@ -283,6 +309,10 @@ public class MessageDispatcher {
 
                 // broadcast new leader announcement
                 NetworkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId), brokerId, sharedState);
+
+                // Send the complete log to all followers
+                List<LogEntry> completeLog = sharedState.getCompleteLog();
+                NetworkManager.broadcastMessage(new LeaderLogSync(brokerId, completeLog), brokerId, sharedState);
 
                 // terminate the election phase
                 electionInfo.stopElection();
@@ -315,6 +345,16 @@ public class MessageDispatcher {
 
             // restart the heartbeat manager
             heartbeatManager.restart();  //TODO: useless? since the role of the brokers who received the announcement should be remained follower as it was before...
+        }
+    }
+
+    private void handleLeaderLogSync(LeaderLogSync msg) {
+        if (msg.leaderId() == sharedState.getLeaderId() && msg.leaderId() != brokerId) {
+            System.out.println("[INFO]: Received log from leader " + msg.leaderId() +
+                    " with " + msg.completeLog().size() + " entries");
+
+            // Replace local log with leader's log
+            sharedState.replaceLog(msg.completeLog());
         }
     }
 }
