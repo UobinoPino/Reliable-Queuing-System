@@ -1,9 +1,12 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
+import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNominationAck;
 
 /// A class containing all election-related information for the broker.
 public class ElectionInfo {
@@ -11,6 +14,22 @@ public class ElectionInfo {
     private final AtomicInteger bestCandidate = new AtomicInteger(-1);
     private final AtomicInteger bestCandidateLogLength = new AtomicInteger(0);
     private final Set<Integer> receivedAcks = ConcurrentHashMap.newKeySet();
+    private final Set<Integer> activeBrokersDuringElection = ConcurrentHashMap.newKeySet();
+
+
+    /// Updates the set of active brokers for this election
+    public void updateActiveBrokers(Set<Integer> activeBrokers) {
+        activeBrokersDuringElection.clear();
+        activeBrokersDuringElection.addAll(activeBrokers);
+        System.out.println("[INFO]: Active brokers during election updated: " + activeBrokersDuringElection);
+    }
+
+    /// Removes a broker from the active list during election
+    public void removeBrokerFromElection(int brokerId) {
+        if (activeBrokersDuringElection.remove(brokerId)) {
+            System.out.println("[INFO]: Broker " + brokerId + " removed from active election participants");
+        }
+    }
 
     /// Resets the election-related information as they were before starting the new leader election.
     public void stopElection() {
@@ -18,6 +37,7 @@ public class ElectionInfo {
         bestCandidate.set(-1);
         bestCandidateLogLength.set(0);
         receivedAcks.clear();
+        activeBrokersDuringElection.clear();
     }
 
     /// Updates the stored best-candidate with the given one.
@@ -60,5 +80,16 @@ public class ElectionInfo {
     /// Returns the number of brokers that already sent an ACK for the current broker nomination.
     public int getReceivedAcksCount() {
         return receivedAcks.size();
+    }
+
+    /// Returns true if all active brokers have sent ACKs
+    public boolean hasAllActiveAcks() {
+        // All active brokers must send ACKs (not just a majority)
+        return receivedAcks.size() >= activeBrokersDuringElection.size();
+    }
+
+    /// Returns the set of active brokers during this election
+    public Set<Integer> getActiveBrokers() {
+        return new HashSet<>(activeBrokersDuringElection);
     }
 }

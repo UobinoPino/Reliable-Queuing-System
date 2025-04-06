@@ -200,6 +200,9 @@ public class MessageDispatcher {
             // remove the leader from the list of known brokers
             sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
+            // Initialize the active brokers for this election
+            electionInfo.updateActiveBrokers(sharedState.getBrokerAddresses().keySet());
+
             // compare your log with the received one
             int myLogLength = sharedState.getLogLength();
 
@@ -264,13 +267,16 @@ public class MessageDispatcher {
             System.out.println("[INFO]: Received nomination ACK from broker " + msg.senderId());
 
             int receivedAcksCount = electionInfo.getReceivedAcksCount();
-            int BrokersCount = sharedState.getBrokersCount();
+            Set<Integer> activeBrokers = electionInfo.getActiveBrokers();
+            int activeBrokersCount = activeBrokers.size();
 
-            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + BrokersCount);
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
 
             // if all ACKs have been received...
-            if (receivedAcksCount == BrokersCount) {  //TODO: is the total number of brokers necessary? or is the majority enough?
+            if (electionInfo.hasAllActiveAcks()) {  //TODO: is the total number of brokers necessary? or is the majority enough?
                 System.out.println("[INFO]: Consensus achieved. Becoming new leader");
+                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount +
+                        " active brokers. Becoming new leader");
 
                 // become leader
                 sharedState.setNewLeaderId(brokerId);
