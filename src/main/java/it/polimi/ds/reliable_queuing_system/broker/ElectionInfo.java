@@ -1,12 +1,9 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
-import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNominationAck;
 
 /// A class containing all election-related information for the broker.
 public class ElectionInfo {
@@ -21,7 +18,6 @@ public class ElectionInfo {
         bestCandidate.set(-1);
         bestCandidateLogLength.set(0);
         receivedAcks.clear();
-      //  activeBrokersDuringElection.clear();
     }
 
     /// Updates the stored best-candidate with the given one.

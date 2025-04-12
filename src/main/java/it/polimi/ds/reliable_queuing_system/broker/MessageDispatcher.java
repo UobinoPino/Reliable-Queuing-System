@@ -51,7 +51,6 @@ public class MessageDispatcher {
             case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
             case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
             case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
-            case LeaderLogSync msg -> handleLeaderLogSync(msg);
             default -> throw new ClassNotFoundException();
         }
     }
@@ -308,11 +307,8 @@ public class MessageDispatcher {
                 sharedState.setNewLeaderId(brokerId);
 
                 // broadcast new leader announcement
-                NetworkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId), brokerId, sharedState);
-
-                // Send the complete log to all followers
                 List<LogEntry> completeLog = sharedState.getCompleteLog();
-                NetworkManager.broadcastMessage(new LeaderLogSync(brokerId, completeLog), brokerId, sharedState);
+                NetworkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
 
                 // terminate the election phase
                 electionInfo.stopElection();
@@ -340,21 +336,15 @@ public class MessageDispatcher {
             // update leader info in SharedState
             sharedState.setNewLeaderId(msg.brokerId());
 
+            // Replace local log with leader's log
+            System.out.println("[INFO]: Replacing log with the one received from new leader, with " + msg.newLeaderLog().size() + " entries");
+            sharedState.replaceLog(msg.newLeaderLog());
+
             // terminate the election phase
             electionInfo.stopElection();
 
             // restart the heartbeat manager
             heartbeatManager.restart();  //TODO: useless? since the role of the brokers who received the announcement should be remained follower as it was before...
-        }
-    }
-
-    private void handleLeaderLogSync(LeaderLogSync msg) {
-        if (msg.leaderId() == sharedState.getLeaderId() && msg.leaderId() != brokerId) {
-            System.out.println("[INFO]: Received log from leader " + msg.leaderId() +
-                    " with " + msg.completeLog().size() + " entries");
-
-            // Replace local log with leader's log
-            sharedState.replaceLog(msg.completeLog());
         }
     }
 }

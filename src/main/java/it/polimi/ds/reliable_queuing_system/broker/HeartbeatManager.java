@@ -154,8 +154,6 @@ public class HeartbeatManager {
                     missedHeartbeats.remove(bId);
                     // If an election is in progress, update the active brokers list
                     if (electionInfo.isElectionInProgress()) {
-                        //electionInfo.removeBrokerFromElection(bId);
-
                         // If the failed broker was the best candidate in the election, restart the election
                         if (electionInfo.getBestCandidate() == bId) {
                             System.out.println("[INFO]: Best candidate broker " + bId + " failed during election. Restarting election...");

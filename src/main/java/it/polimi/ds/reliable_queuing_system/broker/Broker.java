@@ -117,7 +117,6 @@ public class Broker {
             System.out.print("Enter the port the client should listen to: ");
             try {
                 int input = scanner.nextInt();
-                scanner.nextLine();
                 if (input < 1024 || input > 65535) {
                     System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
                 } else {
@@ -126,6 +125,7 @@ public class Broker {
             } catch (InputMismatchException e) {
                 System.out.println("[ERROR]: Invalid port number. Please choose a number between 1024 and 65535.");
             }
+            scanner.nextLine();
         }
 
         return port;
