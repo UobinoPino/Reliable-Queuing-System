@@ -246,9 +246,17 @@ public class Client {
         String queueId = scanner.nextLine();
 
         // obtain the value to be added to the queue
-        System.out.print("Please insert the new value you want to append to the queue: ");
-        int newValue = scanner.nextInt();
-        scanner.nextLine();
+        Integer newValue = null;
+        while (newValue == null) {
+            System.out.print("Please insert the new value you want to append to the queue: ");
+            try {
+                newValue = scanner.nextInt();
+                scanner.nextLine(); // consume the remaining newline
+            } catch (InputMismatchException e) {
+                System.out.println("[ERROR]: Invalid input. Please enter a valid integer.");
+                scanner.nextLine(); // clear the scanner buffer
+            }
+        }
 
         try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
