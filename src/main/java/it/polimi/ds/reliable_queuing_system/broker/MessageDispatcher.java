@@ -35,6 +35,8 @@ public class MessageDispatcher {
             return;
         }
 
+        System.out.println("Received " + message);
+
         // else, handle the message accordingly
         switch (message) {
             case EntryPropagation msg -> handleEntryPropagation(msg);
@@ -96,7 +98,6 @@ public class MessageDispatcher {
                 logManager.commitEntry(msg.logEntry());
 
                 // broadcast the EntryCommit message
-                //FIXME: this is probably what causes the new followers to adding themselves twice
                 NetworkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
             }
         }
@@ -298,7 +299,7 @@ public class MessageDispatcher {
             System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
 
             // if all ACKs have been received...
-            if (receivedAcksCount >= activeBrokersCount) {  //TODO: is the total number of brokers necessary? or is the majority enough?
+            if (receivedAcksCount >= activeBrokersCount) {
                 System.out.println("[INFO]: Consensus achieved. Becoming new leader");
                 System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount +
                         " active brokers. Becoming new leader");
@@ -344,7 +345,7 @@ public class MessageDispatcher {
             electionInfo.stopElection();
 
             // restart the heartbeat manager
-            heartbeatManager.restart();  //TODO: useless? since the role of the brokers who received the announcement should be remained follower as it was before...
+            heartbeatManager.restart();
         }
     }
 }

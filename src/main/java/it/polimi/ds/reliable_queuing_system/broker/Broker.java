@@ -46,20 +46,22 @@ public class Broker {
             initializeManagers();
         }
         else {
-            // ask the user to specify the address of a known broker
-            Address knownBrokerAddress = obtainKnownBrokerAddress();
+            boolean requestSent = false;
+            while (!requestSent) {
+                // ask the user to specify the address of a known broker
+                Address knownBrokerAddress = obtainKnownBrokerAddress();
 
-            // send the join request to the known broker
-            try(Socket socket = new Socket(knownBrokerAddress.ip(), knownBrokerAddress.port())) {
-                ObjectOutputStream toExistingBroker = new ObjectOutputStream(socket.getOutputStream());
-                toExistingBroker.writeObject(new BrokerJoinRequest(brokerAddress));
-                toExistingBroker.flush();
+                // send the join request to the known broker
+                try(Socket socket = new Socket(knownBrokerAddress.ip(), knownBrokerAddress.port())) {
+                    ObjectOutputStream toExistingBroker = new ObjectOutputStream(socket.getOutputStream());
+                    toExistingBroker.writeObject(new BrokerJoinRequest(brokerAddress));
+                    toExistingBroker.flush();
 
-                brokerState = BrokerState.WAITING_JOIN;
-            } catch (IOException e) {
-                System.out.println("[FATAL ERROR]: " + e.getMessage());
-                System.exit(1);
-                //TODO: maybe we could re-ask another address instead of crashing
+                    brokerState = BrokerState.WAITING_JOIN;
+                    requestSent = true;
+                } catch (IOException e) {
+                    System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
+                }
             }
         }
 

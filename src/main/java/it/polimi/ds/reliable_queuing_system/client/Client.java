@@ -9,6 +9,8 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class Client {
     private static final Scanner scanner = new Scanner(System.in);
@@ -21,7 +23,9 @@ public class Client {
     private static Integer nextOperationId = 0;
 
     private static List<Integer> pendingReadValues;
-    private static ClientState clientState = ClientState.READY;  //TODO: check if it needs locks to be thread safe
+    private static final AtomicReference<ClientState> clientState = new AtomicReference<>(ClientState.READY);  //TODO: is this enough to avoid race conditions? Or should we use synchronize blocks instead?
+
+    private static final CountDownLatch isIncomingMessagesListenerReady = new CountDownLatch(1);
 
     public static void main(String[] args) throws InterruptedException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: CLIENT ========");
@@ -37,7 +41,7 @@ public class Client {
         // start thread to wait for incoming messages
         Thread messagesIngressThread = new Thread(Client::incomingMessagesListener);
         messagesIngressThread.start();
-        Thread.sleep(500);  //TODO: maybe unnecessary?
+        isIncomingMessagesListenerReady.await();
 
         // request client id
         requestClientId();
@@ -45,7 +49,7 @@ public class Client {
         // enter TUI loop
         String input = "";
         do {
-            if (clientState == ClientState.READY) {
+            if (clientState.get() == ClientState.READY) {
                 System.out.println("\nWhat do you want to do?");
                 System.out.println("\tr) Read the new values from a queue");
                 System.out.println("\tw) Write a new value in a queue");
@@ -128,6 +132,7 @@ public class Client {
     private static void incomingMessagesListener() {
         try(ServerSocket serverSocket = new ServerSocket(clientAddress.port())) {
             System.out.println("Client ready to receive messages from brokers at port: " + clientAddress.port());
+            isIncomingMessagesListenerReady.countDown();
 
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
@@ -154,18 +159,17 @@ public class Client {
     }
 
     private static void handleClientIdAssignment(ClientIdAssignment msg) {
-        if (clientState == ClientState.WAITING_ID) {
+        if (clientState.compareAndSet(ClientState.WAITING_ID, ClientState.READY)) {
             System.out.println("[INFO]: Obtained new client ID: " + msg.clientId());
 
             clientId = msg.clientId();
-            clientState = ClientState.READY;
         } else {
             System.out.println("[INFO]: Unexpected ClientIdAssignment message received.");
         }
     }
 
     private static void handleReadResponse(ReadResponse msg) {
-        if (clientState == ClientState.WAITING_READ) {
+        if (clientState.get() == ClientState.WAITING_READ) {
             System.out.println("[INFO]: Read response received. Waiting for confirmation message.");
 
             pendingReadValues = msg.values();
@@ -175,23 +179,21 @@ public class Client {
     }
 
     private static void handleReadConfirmation(ReadConfirmation msg) {
-        if (clientState == ClientState.WAITING_READ && pendingReadValues != null) {
+        if (pendingReadValues != null && clientState.compareAndSet(ClientState.WAITING_READ, ClientState.READY)) {
             if (pendingReadValues.isEmpty()) {
                 System.out.println("No new values has been added to queue since last reading.");
             } else {
                 System.out.println("New values in queue have been found: " + pendingReadValues);
             }
             pendingReadValues = null;
-            clientState = ClientState.READY;
         } else {
             System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
         }
     }
 
     private static void handleWriteResponse(WriteResponse msg) {
-        if (clientState == ClientState.WAITING_WRITE) {
+        if (clientState.compareAndSet(ClientState.WAITING_WRITE, ClientState.READY)) {
             System.out.println("New value appended to the queue successfully.");
-            clientState = ClientState.READY;
         } else {
             System.out.println("[INFO]: Unexpected WriteResponse message received.");
         }
@@ -203,6 +205,8 @@ public class Client {
     //region USER ACTIONS FUNCTIONS
 
     private static void requestClientId() {
+        //TODO: update to implement some sort of re-connection mechanism
+        // (to avoid being assigned a new client id when reconnecting)
         boolean requestSent = false;
         while (!requestSent) {
             try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
@@ -210,10 +214,8 @@ public class Client {
                 toBroker.writeObject(new ClientIdRequest(clientAddress));
                 toBroker.flush();
 
-                clientState = ClientState.WAITING_ID;
+                clientState.set(ClientState.WAITING_ID);
                 requestSent = true;
-
-                //TODO: maybe start a timeout to retry if the request gets lost?
             } catch (IOException e) {
                 System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
                 brokerAddress = obtainKnownBrokerAddress();
@@ -231,7 +233,7 @@ public class Client {
             out.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
             out.flush();
 
-            clientState = ClientState.WAITING_READ;
+            clientState.set(ClientState.WAITING_READ);
         } catch (IOException e) {
             System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
             brokerAddress = obtainKnownBrokerAddress();
@@ -261,7 +263,7 @@ public class Client {
             out.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
             out.flush();
 
-            clientState = ClientState.WAITING_WRITE;
+            clientState.set(ClientState.WAITING_WRITE);
         } catch (IOException e) {
             System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
             brokerAddress = obtainKnownBrokerAddress();

@@ -254,10 +254,7 @@ public class SharedState implements Serializable {
     }
 
 
-    public void commitEntry(LogEntry logEntry) {
-        //TODO: is it ok to call indexOf directly on the object?
-        // Or are they different objects if they have been passed through the network?
-
+    public boolean commitEntry(LogEntry logEntry) {
         // remove the given entry from the waiting list it's currently in (if any)
         int waitingAckPos = waitingAckEntries.indexOf(logEntry);
         int waitingCommitPos = waitingCommitEntries.indexOf(logEntry);
@@ -269,7 +266,11 @@ public class SharedState implements Serializable {
         } else if (pendingPos >= 0) {
             pendingEntries.remove(logEntry);
         } else if (log.contains(logEntry)) {
-            return;  // entry already committed, no need to do anything else
+            System.out.println("[INFO]: Trying to commit an entry that is already in the log. Ignoring...");
+            return false;  // entry already committed, no need to do anything else
+        } else {
+            System.out.println("[INFO]: Trying to commit an entry that is not in any waiting list. Accepting it anyway...");
+            //TODO: this happens when operating in single broker mode. Is it acceptable or should we change it in a way entries are added to the list and then immediately committed?
         }
 
         // if the given entry can be directly added to log...
@@ -293,7 +294,7 @@ public class SharedState implements Serializable {
         }
 
 
-        //FIXME: what happens if there are multiple entries with the same index?
+        return true;
     }
 
     /// Returns the current length of the broker's log.

@@ -185,11 +185,9 @@ public class HeartbeatManager {
         long now = System.currentTimeMillis();
         int leaderId = sharedState.getLeaderId();
 
-        //TODO: worth keeping even if it should never be executed?
         if (leaderId == brokerId) {
-            // I'm the leader, can't time out myself
-            System.out.println("NON DOVREBBE MAI ENTRARE QUI!");
-            return false;
+            System.out.println("[FATAL ERROR]: Leader should never time out itself.");
+            System.exit(1);
         }
 
         long diff = now - lastHeartbeats.getOrDefault(leaderId, 0L);

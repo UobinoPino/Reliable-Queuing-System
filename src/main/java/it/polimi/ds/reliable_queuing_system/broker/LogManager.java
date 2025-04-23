@@ -1,10 +1,7 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
-import it.polimi.ds.reliable_queuing_system.utils.Address;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
-
-import java.util.Map;
 
 /// A class that will take care of committing log entries.
 public class LogManager {
@@ -16,12 +13,14 @@ public class LogManager {
     private final int brokerId;
     private final SharedState sharedState;
 
-    /// Commit the given [LogEntry] in the [SharedState] log and perform the
-    /// operation associated with it.
+    /// Tries to commit the given [LogEntry] in the [SharedState] log
+    /// and (if succeeded) perform the operation associated with it.
     public void commitEntry(LogEntry entry) {
-        sharedState.commitEntry(entry);
+        boolean committed = sharedState.commitEntry(entry);
 
-        performEntryOperation(entry);
+        if (committed) {
+            performEntryOperation(entry);
+        }
     }
 
     /// Perform the operation corresponding to the given [LogEntry]
@@ -43,34 +42,15 @@ public class LogManager {
 
     /// Add to the list of known brokers in the [SharedState] the broker who sent the given [BrokerJoinRequest].
     private void addBroker(BrokerJoinRequest req) {
-        //FIXME: the check for existance of the address below was a temporary fix for the
-        // problem of new followers adding themselves twice. Maybe not needed when that error will be fixed?
+        // obtain a new id for the broker to be added
+        int newBrokerId = sharedState.getNewBrokerId();
 
-        // Check if the address already exists in the system
-        boolean brokerAlreadyPresent = false;
-        Map<Integer, Address> existingBrokers = sharedState.getBrokerAddresses();
-        for (Map.Entry<Integer, Address> entry : existingBrokers.entrySet()) {
-            Address existingAddr = entry.getValue();
-            if (existingAddr.ip().equals(req.brokerAddress().ip()) &&
-                    existingAddr.port().equals(req.brokerAddress().port())) {
-                // Address already exists, use the existing broker ID
-                brokerAlreadyPresent = true;
-                System.out.println("[INFO]: Broker with address " + req.brokerAddress() +
-                        " already exists with ID " + entry.getKey());
-                break;
-            }
-        }
+        // Add the broker to the list in the shared state
+        sharedState.addBrokerAddress(newBrokerId, req.brokerAddress());
 
-        // If no existing broker with this address, get a new broker ID
-        if (!brokerAlreadyPresent) {
-            int newBrokerId = sharedState.getNewBrokerId();
-            // Add the broker to the list in the shared state
-            sharedState.addBrokerAddress(newBrokerId, req.brokerAddress());
-
-            // If leader, return a BrokerJoinResponse to the requesting broker
-            if (isLeader()) {
-                NetworkManager.sendMessage(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
-            }
+        // If leader, return a BrokerJoinResponse to the requesting broker
+        if (isLeader()) {
+            NetworkManager.sendMessage(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
         }
     }
 
