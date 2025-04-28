@@ -220,8 +220,7 @@ public class Client {
     //region USER ACTIONS FUNCTIONS
 
     private static void requestClientId() {
-        //TODO: update to implement some sort of re-connection mechanism
-        // (to avoid being assigned a new client id when reconnecting)
+
         boolean requestSent = false;
         while (!requestSent) {
             synchronized (clientStateLock) {
@@ -232,6 +231,8 @@ public class Client {
 
                     clientState = ClientState.WAITING_ID;
                     requestSent = true;
+
+                    System.out.println("[INFO]: Sent client ID request. If this is a reconnection, you'll receive your previous ID.");
                 } catch (IOException e) {
                     System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
                     brokerAddress = obtainKnownBrokerAddress();

@@ -208,14 +208,9 @@ public class MessageDispatcher {
     private void handleHeartbeatAck(HeartbeatAck msg) {
         if (isLeader()) {
             Integer followerId = msg.brokerId();
-            if (followerId != null) {
-                heartbeatManager.updateLastHeartbeatAckReceived(followerId);
-                System.out.println("[INFO]: Received heartbeat acknowledgment from broker " + followerId);
-            } else {
-                //TODO: is this necessary? Like, can the followerId inside a HeartbeatAck be null?
-                // (if so maybe we should check validity of parameters of all other messages)
-                System.out.println("[ERROR]: Received heartbeat acknowledgment without broker ID");
-            }
+            heartbeatManager.updateLastHeartbeatAckReceived(followerId);
+            System.out.println("[INFO]: Received heartbeat acknowledgment from broker " + followerId);
+
         }
     }
 

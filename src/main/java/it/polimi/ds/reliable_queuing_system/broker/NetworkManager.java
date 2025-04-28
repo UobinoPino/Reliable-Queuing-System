@@ -23,24 +23,15 @@ public class NetworkManager {
 
         int leaderId = sharedState.getLeaderId();
 
-        if (leaderId != myId) {
-            Address leaderAddr = sharedState.getBrokerAddress(leaderId);
+        Address leaderAddr = sharedState.getBrokerAddress(leaderId);
 
-            try(Socket socket = new Socket(leaderAddr.ip(), leaderAddr.port())) {
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(msg);
-                out.flush();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-
-            }
+        try(Socket socket = new Socket(leaderAddr.ip(), leaderAddr.port())) {
+            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+            out.writeObject(msg);
+            out.flush();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
-        else {
-            System.out.println("[ERROR]: Tried to forward a message to the current leader while being the current leader.");
-            //TODO: how should we handle it?
-        }
-
-
     }
 
     /// Broadcasts the given [Message] to all other brokers in the system
@@ -48,7 +39,8 @@ public class NetworkManager {
         Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
         Set<Integer> brokerIds = brokerAddresses.keySet();
 
-        System.out.println("[INFO]: Broadcasting to brokers: " + brokerIds);
+
+
 
         for (Integer id : brokerIds) {
             if (id != myId) {
@@ -80,7 +72,7 @@ public class NetworkManager {
             out.flush();
         } catch (IOException e) {
             System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
-            //TODO: should we do something here?
+
         }
     }
 }

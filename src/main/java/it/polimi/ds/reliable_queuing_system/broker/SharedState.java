@@ -37,10 +37,13 @@ public class SharedState implements Serializable {
     private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
     private final List<LogEntry> log = new CopyOnWriteArrayList<>();
 
+    private final Map <Address, Integer> clientAddressMap = new ConcurrentHashMap<>();
+
     // File paths for persistence
     private static final String DATA_DIR = "broker_data";
     private static final String QUEUES_FILE = DATA_DIR + "/queues.json";
     private static final String OFFSETS_FILE = DATA_DIR + "/client_offsets.json";
+    private static final String CLIENT_ADDRESSES_FILE = DATA_DIR + "/client_addresses.json";
 
     // Gson instance for JSON serialization/deserialization
     private transient Gson gson = new GsonBuilder().setPrettyPrinting().create();
@@ -120,6 +123,43 @@ public class SharedState implements Serializable {
     public void persistState() {
         persistQueues();
         persistClientOffsets();
+        persistClientAddresses();
+    }
+
+    public void registerClientAddress(Address clientAddress, int clientId) {
+        clientAddressMap.put(clientAddress, clientId);
+        persistState(); // Persist the updated state
+    }
+
+    public Integer getClientIdByAddress(Address clientAddress) {
+        return clientAddressMap.get(clientAddress);
+    }
+
+    private void persistClientAddresses() {
+        try {
+            String json = gson.toJson(clientAddressMap);
+            Files.write(Paths.get(CLIENT_ADDRESSES_FILE), json.getBytes());
+        } catch (IOException e) {
+            System.err.println("Failed to persist client addresses: " + e.getMessage());
+        }
+    }
+
+    private void loadClientAddresses() {
+        try {
+            File file = new File(CLIENT_ADDRESSES_FILE);
+            if (file.exists()) {
+                String json = new String(Files.readAllBytes(file.toPath()));
+                Type type = new TypeToken<Map<Address, Integer>>(){}.getType();
+                Map<Address, Integer> loadedAddresses = gson.fromJson(json, type);
+
+                if (loadedAddresses != null) {
+                    clientAddressMap.putAll(loadedAddresses);
+                    System.out.println("Loaded " + loadedAddresses.size() + " client addresses from disk");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to load client addresses: " + e.getMessage());
+        }
     }
 
     /**
@@ -270,7 +310,7 @@ public class SharedState implements Serializable {
             return false;  // entry already committed, no need to do anything else
         } else {
             System.out.println("[INFO]: Trying to commit an entry that is not in any waiting list. Accepting it anyway...");
-            //TODO: this happens when operating in single broker mode. Is it acceptable or should we change it in a way entries are added to the list and then immediately committed?
+
         }
 
         // if the given entry can be directly added to log...

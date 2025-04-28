@@ -31,7 +31,7 @@ public class HeartbeatManager {
     public static final long HEARTBEAT_INTERVAL_MS = 5000;
 
     /// Maximum time the leader should wait for HeartbeatAck from a follower before considering it missed.
-    public static final long HEARTBEAT_TIMEOUT_MS = 10000;  //TODO: maybe increase?
+    public static final long HEARTBEAT_TIMEOUT_MS = 10000;
 
     /// Maximum number of heartbeats that a follower can miss before being considered as crashed.
     public static final int MISSABLE_HEARTBEATS = 2;
