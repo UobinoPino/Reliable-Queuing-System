@@ -1,16 +1,12 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.utils.Address;
+import it.polimi.ds.reliable_queuing_system.utils.AddressJsonAdapter;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-
-
-import java.io.File;
-import java.io.IOException;
-import java.io.Serializable;
+import java.io.*;
 import java.util.*;
 import java.lang.reflect.Type;
 import java.nio.file.Files;
@@ -20,33 +16,36 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
-
 /// A class that contains the state replicated over all the brokers.
 public class SharedState implements Serializable {
-    private final AtomicInteger nextClientIdAvailable = new AtomicInteger(0);
-    private final AtomicInteger nextBrokerIdAvailable = new AtomicInteger(0);
-
-    private final Map<String, List<Integer>> queues = new ConcurrentHashMap<>();
-    private final Map<Integer, Map<String, Integer>> clientOffsets = new ConcurrentHashMap<>();
-
-    private final Map<Integer, Address> knownBrokers = new ConcurrentHashMap<>();
-    private final AtomicInteger leaderId = new AtomicInteger();
-
-    private final List<LogEntry> waitingAckEntries = new CopyOnWriteArrayList<>();
-    private final List<LogEntry> waitingCommitEntries = new CopyOnWriteArrayList<>();
-    private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
-    private final List<LogEntry> log = new CopyOnWriteArrayList<>();
-
-    private final Map <Address, Integer> clientAddressMap = new ConcurrentHashMap<>();
-
-    // File paths for persistence
+    // region PERSISTENCE-RELATED FIELDS
     private static final String DATA_DIR = "broker_data";
     private static final String QUEUES_FILE = DATA_DIR + "/queues.json";
     private static final String OFFSETS_FILE = DATA_DIR + "/client_offsets.json";
     private static final String CLIENT_ADDRESSES_FILE = DATA_DIR + "/client_addresses.json";
 
-    // Gson instance for JSON serialization/deserialization
-    private transient Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    private transient Gson gson = initGson();
+    //endregion
+
+    //region BROKER-RELATED FIELDS
+    private final AtomicInteger nextBrokerIdAvailable = new AtomicInteger(0);
+    private final Map<Integer, Address> knownBrokers = new ConcurrentHashMap<>();
+    private final AtomicInteger leaderId = new AtomicInteger();
+    //endregion
+
+    //region CLIENT-RELATED FIELDS
+    private final AtomicInteger nextClientIdAvailable = new AtomicInteger(0);
+    private final Map<String, List<Integer>> queues = new ConcurrentHashMap<>();
+    private final Map<Integer, Map<String, Integer>> clientOffsets = new ConcurrentHashMap<>();
+    private final Map <Address, Integer> clientAddressMap = new ConcurrentHashMap<>();
+    //endregion
+
+    //region LOG-RELATED FIELDS
+    private final List<LogEntry> waitingAckEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> waitingCommitEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
+    private final List<LogEntry> log = new CopyOnWriteArrayList<>();
+    //endregion
 
 
     public SharedState() {
@@ -60,16 +59,35 @@ public class SharedState implements Serializable {
         // Load persisted data if available
         loadPersistedState();
     }
-    /**
-     * Load persisted state from disk
-     */
+
+
+    //region PERSISTENCE-RELATED METHODS
+
+    /// Initialize the Gson object with a custom serialization/deserialization adapter for the [Address] type.
+    private Gson initGson() {
+        return new GsonBuilder()
+                .registerTypeAdapter(Address.class, new AddressJsonAdapter())
+                .enableComplexMapKeySerialization()
+                .setPrettyPrinting()
+                .create();
+    }
+
+    /// Method called while reconstructing the `SharedState` object after deserialization
+    /// (needed since the `gson` field is transient and therefore needs to be recreated after deserialization).
+    @Serial
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        gson = initGson();
+    }
+
+    /// Load persisted state from disk
     private void loadPersistedState() {
         loadQueues();
         loadClientOffsets();
+        loadClientAddresses();
     }
-    /**
-    * Load queues from disk
-     */
+
+    /// Load queues from disk
     private void loadQueues() {
         try {
             File file = new File(QUEUES_FILE);
@@ -92,9 +110,7 @@ public class SharedState implements Serializable {
         }
     }
 
-    /**
-     * Load client offsets from disk
-     */
+    /// Load client offsets from disk
     private void loadClientOffsets() {
         try {
             File file = new File(OFFSETS_FILE);
@@ -117,33 +133,7 @@ public class SharedState implements Serializable {
         }
     }
 
-    /**
-     * Persist current state to disk
-     */
-    public void persistState() {
-        persistQueues();
-        persistClientOffsets();
-        persistClientAddresses();
-    }
-
-    public void registerClientAddress(Address clientAddress, int clientId) {
-        clientAddressMap.put(clientAddress, clientId);
-        persistState(); // Persist the updated state
-    }
-
-    public Integer getClientIdByAddress(Address clientAddress) {
-        return clientAddressMap.get(clientAddress);
-    }
-
-    private void persistClientAddresses() {
-        try {
-            String json = gson.toJson(clientAddressMap);
-            Files.write(Paths.get(CLIENT_ADDRESSES_FILE), json.getBytes());
-        } catch (IOException e) {
-            System.err.println("Failed to persist client addresses: " + e.getMessage());
-        }
-    }
-
+    /// Load the map between client addresses and client IDs from disk
     private void loadClientAddresses() {
         try {
             File file = new File(CLIENT_ADDRESSES_FILE);
@@ -154,6 +144,7 @@ public class SharedState implements Serializable {
 
                 if (loadedAddresses != null) {
                     clientAddressMap.putAll(loadedAddresses);
+                    nextClientIdAvailable.set(clientAddressMap.size());
                     System.out.println("Loaded " + loadedAddresses.size() + " client addresses from disk");
                 }
             }
@@ -162,9 +153,7 @@ public class SharedState implements Serializable {
         }
     }
 
-    /**
-     * Persist queues to disk
-     */
+    /// Persist queues to disk
     private void persistQueues() {
         try {
             String json = gson.toJson(queues);
@@ -174,9 +163,7 @@ public class SharedState implements Serializable {
         }
     }
 
-    /**
-     * Persist client offsets to disk
-     */
+    /// Persist client offsets to disk
     private void persistClientOffsets() {
         try {
             String json = gson.toJson(clientOffsets);
@@ -185,58 +172,33 @@ public class SharedState implements Serializable {
             System.err.println("Failed to persist client offsets: " + e.getMessage());
         }
     }
-    private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
-        in.defaultReadObject();
-        // Recreate the Gson instance after deserialization
-        gson = new GsonBuilder().setPrettyPrinting().create();
+
+    /// Persist the map between client addresses and client IDs to disk
+    private void persistClientAddresses() {
+        try {
+            String json = gson.toJson(clientAddressMap);
+            Files.write(Paths.get(CLIENT_ADDRESSES_FILE), json.getBytes());
+        } catch (IOException e) {
+            System.err.println("Failed to persist client addresses: " + e.getMessage());
+        }
     }
 
-
-
-    /// Returns the next client id available for the system
-    /// (and increments the counter accordingly).
-    public int getNewClientId() {
-        return nextClientIdAvailable.getAndIncrement();
+    /// Persist current state to disk
+    public void persistState() {
+        persistQueues();
+        persistClientOffsets();
+        persistClientAddresses();
     }
+
+    //endregion
+
+
+    //region BROKER-TO-BROKER METHODS
 
     /// Returns the next broker id available for the system
     /// (and increments the counter accordingly).
     public int getNewBrokerId() {
         return nextBrokerIdAvailable.getAndIncrement();
-    }
-
-    // Methods to access and manipulate queues
-
-    /// Returns the queue identified by queueName. If it doesn't exist, a new one is created.
-    public List<Integer> getQueue(String queueName) {
-        return queues.computeIfAbsent(queueName, key -> new CopyOnWriteArrayList<>());
-    }
-
-    /// Adds an item to the queue identified by queueName.
-    public void addToQueue(String queueName, int item) {
-        getQueue(queueName).add(item);
-        persistQueues();
-    }
-
-
-    // Methods to access and manipulate client offsets
-
-    /// Returns the offsets for a given client id.
-    /// If no offsets exist yet, an empty map is created.
-    public Map<String, Integer> getClientOffsets(int clientId) {
-        return clientOffsets.computeIfAbsent(clientId, key -> new ConcurrentHashMap<>());
-    }
-
-    /// Updates the offset for a specific client and queue.
-    public void updateClientOffset(int clientId, String queueName, int newOffset) {
-        getClientOffsets(clientId).put(queueName, newOffset);
-        persistClientOffsets();
-    }
-
-    /// Retrieves the offset for a specific client and queue.
-    /// Returns 0 if no offset is found (so that the clients starts to read from the beginning).
-    public int getClientOffset(int clientId, String queueName) {
-        return getClientOffsets(clientId).getOrDefault(queueName, 0);
     }
 
     /// Returns the number of brokers currently connected.
@@ -249,6 +211,7 @@ public class SharedState implements Serializable {
         return knownBrokers.get(brokerId);
     }
 
+    /// Returns a copy of the map containing broker addresses and IDs.
     public Map<Integer, Address> getBrokerAddresses() {
         return new HashMap<>(knownBrokers);
     }
@@ -274,10 +237,60 @@ public class SharedState implements Serializable {
         this.leaderId.set(leaderId);
     }
 
-    /// Returns whether the broker with the given id is the leader.
-    public boolean isLeader(int brokerId) {
-        return leaderId.get() == brokerId;
+    //endregion
+
+
+    //region CLIENT-TO-BROKER METHODS
+
+    /// Returns the ID corresponding to the given client address
+    /// (or a new one if it's the first connection from a client with this address)
+    public int getClientId(Address clientAddress) {
+        Integer clientId = clientAddressMap.get(clientAddress);
+        if (clientId == null) {
+            clientId = nextClientIdAvailable.getAndIncrement();
+            clientAddressMap.put(clientAddress, clientId);
+            persistClientAddresses();
+            System.out.println("[INFO]: New client registered with id " + clientId + " and address " + clientAddress);
+        }
+        else {
+            System.out.println("[INFO]: Client " + clientId + " with address " + clientAddress + " reconnected");
+        }
+        return clientId;
     }
+
+    /// Returns the queue identified by queueName. If it doesn't exist, a new one is created.
+    public List<Integer> getQueue(String queueName) {
+        return queues.computeIfAbsent(queueName, key -> new CopyOnWriteArrayList<>());
+    }
+
+    /// Adds an item to the queue identified by queueName.
+    public void addToQueue(String queueName, int item) {
+        getQueue(queueName).add(item);
+        persistQueues();
+    }
+
+    /// Returns the offsets for a given client id.
+    /// If no offsets exist yet, an empty map is created.
+    public Map<String, Integer> getClientOffsets(int clientId) {
+        return clientOffsets.computeIfAbsent(clientId, key -> new ConcurrentHashMap<>());
+    }
+
+    /// Updates the offset for a specific client and queue.
+    public void updateClientOffset(int clientId, String queueName, int newOffset) {
+        getClientOffsets(clientId).put(queueName, newOffset);
+        persistClientOffsets();
+    }
+
+    /// Retrieves the offset for a specific client and queue.
+    /// Returns 0 if no offset is found (so that the clients starts to read from the beginning).
+    public int getClientOffset(int clientId, String queueName) {
+        return getClientOffsets(clientId).getOrDefault(queueName, 0);
+    }
+
+    //endregion
+
+
+    //region LOG-RELATED METHODS
 
     /// Adds a new [LogEntry] to the list of entries waiting for an ack.
     public void addWaitingAckEntry(LogEntry logEntry) {
@@ -289,11 +302,13 @@ public class SharedState implements Serializable {
         waitingCommitEntries.add(logEntry);
     }
 
+    /// Returns whether the given [LogEntry] is waiting for Acks or not.
     public boolean isEntryWaitingAck(LogEntry logEntry) {
         return waitingAckEntries.contains(logEntry);
     }
 
-
+    /// Tries to permanently add the given [LogEntry] to the log,
+    /// and returns if the operation has been successful or not.
     public boolean commitEntry(LogEntry logEntry) {
         // remove the given entry from the waiting list it's currently in (if any)
         int waitingAckPos = waitingAckEntries.indexOf(logEntry);
@@ -342,13 +357,17 @@ public class SharedState implements Serializable {
         return log.size();
     }
 
+    /// Replace the current log with the given one.
     public void replaceLog(List<LogEntry> newLog) {
         log.clear();
         log.addAll(newLog);
         System.out.println("[INFO]: Log replaced with leader's log containing " + newLog.size() + " entries");
     }
 
+    /// Return a copy of the current log.
     public List<LogEntry> getCompleteLog() {
         return new ArrayList<>(log);
     }
+
+    //endregion
 }

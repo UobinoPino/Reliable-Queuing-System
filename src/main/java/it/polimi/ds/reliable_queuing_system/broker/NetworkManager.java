@@ -5,7 +5,9 @@ import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.io.IOException;
 import java.io.ObjectOutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Set;
 
@@ -14,7 +16,7 @@ import static it.polimi.ds.reliable_queuing_system.broker.Broker.electionInfo;
 /// A class containing useful static methods for inter-broker communication.
 public class NetworkManager {
     /// Forwards the given message to the current system leader
-    public static void forwardMessageToLeader(Message msg, int myId, SharedState sharedState) {
+    public static void forwardMessageToLeader(Message msg, SharedState sharedState) {
 
         if (electionInfo.isElectionInProgress()) {
             System.out.println("[INFO]: Election in progress, message forwarding to leader skipped");
@@ -39,14 +41,13 @@ public class NetworkManager {
         Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
         Set<Integer> brokerIds = brokerAddresses.keySet();
 
-
-
-
         for (Integer id : brokerIds) {
             if (id != myId) {
                 Address addr = brokerAddresses.get(id);
                 if (addr != null) {  // Safety check to ensure we have the address
-                    try(Socket socket = new Socket(addr.ip(), addr.port())) {
+                    try(Socket socket = new Socket()) {
+                        SocketAddress socketAddress = new InetSocketAddress(addr.ip(), addr.port());
+                        socket.connect(socketAddress, 1000);  //TODO: check if it works and if so update this 1s timeout with a constant declared somewhere
                         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
                         out.writeObject(message);
                         out.flush();

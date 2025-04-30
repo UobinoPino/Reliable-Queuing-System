@@ -56,24 +56,8 @@ public class LogManager {
 
     /// Assign the next available id to the client who sent the given [ClientIdRequest].
     private void assignClientId(ClientIdRequest req) {
-        // Check if this is a reconnection (client with same address already exists)
-        Integer existingClientId = sharedState.getClientIdByAddress(req.clientAddress());
-
-        int clientId;
-        boolean isReconnection = false;
-
-        if (existingClientId != null) {
-            // This is a reconnection - use the existing ID
-            clientId = existingClientId;
-            isReconnection = true;
-            System.out.println("[INFO]: Reconnection detected for address " + req.clientAddress() +
-                    ", reusing client ID: " + clientId);
-        } else {
-            // This is a new client - get a new ID
-            clientId = sharedState.getNewClientId();
-            // Register the client address with the new ID
-            sharedState.registerClientAddress(req.clientAddress(), clientId);
-        }
+        // get a new client id from the shared state
+        int clientId = sharedState.getClientId(req.clientAddress());
 
         // if leader, return this id to the requesting client
         if (isLeader()) {

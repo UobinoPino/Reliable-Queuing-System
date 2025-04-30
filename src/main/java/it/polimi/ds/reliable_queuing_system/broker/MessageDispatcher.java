@@ -129,7 +129,7 @@ public class MessageDispatcher {
             }
         }
         else {
-            NetworkManager.forwardMessageToLeader(msg, brokerId, sharedState);
+            NetworkManager.forwardMessageToLeader(msg, sharedState);
         }
     }
 
@@ -180,7 +180,7 @@ public class MessageDispatcher {
 
             // Send HeartbeatAck to the leader
             try {
-                NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), brokerId, sharedState);
+                NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), sharedState);
             } catch (RuntimeException e) {
                 System.out.println("[WARN]: Failed to send heartbeat acknowledgment. Leader may have crashed.");
                 // If we failed to connect to the leader, consider starting an election
