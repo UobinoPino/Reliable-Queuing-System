@@ -251,7 +251,9 @@ public class Client {
         String queueId = scanner.nextLine();
 
         synchronized (clientStateLock) {
-            try (Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+            try (Socket socket = new Socket()) {
+                SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
+                socket.connect(socketAddress, NetworkManager.socketTimeout);
                 ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
                 out.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
                 out.flush();
@@ -283,7 +285,9 @@ public class Client {
         }
 
         synchronized (clientStateLock) {
-            try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+            try(Socket socket = new Socket()) {
+                SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
+                socket.connect(socketAddress, NetworkManager.socketTimeout);
                 ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
                 out.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
                 out.flush();

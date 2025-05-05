@@ -90,8 +90,6 @@ public class HeartbeatManager {
 
         // Process broker removals
         for (Integer broker : removedBrokers) {
-            //TODO: is it right to broadcast the broker removal here?
-            // Should it be treated as an entry propagation instead?
             System.out.println("[INFO]: Broker " + broker + " failed. Asking other followers to remove it...");
             NetworkManager.broadcastMessage(new BrokerRemoval(broker), brokerId, sharedState);
         }

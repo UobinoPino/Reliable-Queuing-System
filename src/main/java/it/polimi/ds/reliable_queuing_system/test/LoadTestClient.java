@@ -1,15 +1,13 @@
 package it.polimi.ds.reliable_queuing_system.test;
 
+import it.polimi.ds.reliable_queuing_system.broker.NetworkManager;
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -270,7 +268,9 @@ public class LoadTestClient {
     private Socket getConnection() throws IOException {
         Socket socket = connectionPool.poll();
         if (socket == null || socket.isClosed()) {
-            socket = new Socket(brokerAddress.ip(), brokerAddress.port());
+            socket = new Socket();
+            SocketAddress socketAddress = new InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
+            socket.connect(socketAddress, NetworkManager.socketTimeout);
             socket.setKeepAlive(true);
         }
         return socket;

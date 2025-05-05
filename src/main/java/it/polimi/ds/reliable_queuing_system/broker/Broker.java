@@ -6,10 +6,7 @@ import it.polimi.ds.reliable_queuing_system.utils.Address;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.util.*;
 
 public class Broker {
@@ -52,7 +49,9 @@ public class Broker {
                 Address knownBrokerAddress = obtainKnownBrokerAddress();
 
                 // send the join request to the known broker
-                try(Socket socket = new Socket(knownBrokerAddress.ip(), knownBrokerAddress.port())) {
+                try(Socket socket = new Socket()) {
+                    SocketAddress socketAddress = new InetSocketAddress(knownBrokerAddress.ip(), knownBrokerAddress.port());
+                    socket.connect(socketAddress, NetworkManager.socketTimeout);
                     ObjectOutputStream toExistingBroker = new ObjectOutputStream(socket.getOutputStream());
                     toExistingBroker.writeObject(new BrokerJoinRequest(brokerAddress));
                     toExistingBroker.flush();

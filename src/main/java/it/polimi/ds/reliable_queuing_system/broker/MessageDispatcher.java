@@ -129,7 +129,13 @@ public class MessageDispatcher {
             }
         }
         else {
-            NetworkManager.forwardMessageToLeader(msg, sharedState);
+            try {
+                // forward the message to the current leader
+                NetworkManager.forwardMessageToLeader(msg, sharedState);
+            } catch (RuntimeException e) {
+                // if leader is not reachable, store the message so that it will be handled after the election
+                delayedMessages.add(msg);
+            }
         }
     }
 
@@ -155,8 +161,6 @@ public class MessageDispatcher {
 
     /// Handler for received [BrokerRemoval] messages.
     private void handleBrokerRemoval(BrokerRemoval msg) {
-        //TODO: maybe broker removal should be handled using log entries as well? Otherwise it wouldn't appear in the log...
-
         // Only process if we're not the leader (leader already removed the broker before broadcasting the BrokerRemoval message)
         if (!isLeader()) {
             sharedState.removeBrokerAddress(msg.brokerId());
@@ -341,6 +345,15 @@ public class MessageDispatcher {
 
             // restart the heartbeat manager
             heartbeatManager.restart();
+
+            // dispatch the received messages that had been delayed during the election
+            for (Message delayedMessage : delayedMessages) {
+                try {
+                    dispatch(delayedMessage);
+                } catch (ClassNotFoundException ignored) {
+                    System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
+                }
+            }
         }
     }
 }

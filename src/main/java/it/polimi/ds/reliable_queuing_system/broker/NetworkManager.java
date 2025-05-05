@@ -19,6 +19,7 @@ public class NetworkManager {
     public static final int socketTimeout = 1000;
 
     /// Forwards the given message to the current system leader
+    /// (or throws a `RuntimeException` if the leader is not reachable)
     public static void forwardMessageToLeader(Message msg, SharedState sharedState) {
 
         if (electionInfo.isElectionInProgress()) {
@@ -30,7 +31,9 @@ public class NetworkManager {
 
         Address leaderAddr = sharedState.getBrokerAddress(leaderId);
 
-        try(Socket socket = new Socket(leaderAddr.ip(), leaderAddr.port())) {
+        try(Socket socket = new Socket()) {
+            SocketAddress socketAddress = new InetSocketAddress(leaderAddr.ip(), leaderAddr.port());
+            socket.connect(socketAddress, socketTimeout);
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
             out.writeObject(msg);
             out.flush();
@@ -39,7 +42,7 @@ public class NetworkManager {
         }
     }
 
-    /// Broadcasts the given [Message] to all other brokers in the system
+    /// Tries to broadcast the given [Message] to all other brokers in the system
     public static void broadcastMessage(Message message, int myId, SharedState sharedState) {
         Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
         Set<Integer> brokerIds = brokerAddresses.keySet();
@@ -68,15 +71,16 @@ public class NetworkManager {
         }
     }
 
-    /// Send the given [Message] to the given [Address]
+    /// Tries to send the given [Message] to the given [Address]
     public static void sendMessage(Message message, Address address) {
-        try(Socket socket = new Socket(address.ip(), address.port())) {
+        try(Socket socket = new Socket()) {
+            SocketAddress socketAddress = new InetSocketAddress(address.ip(), address.port());
+            socket.connect(socketAddress, socketTimeout);
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
             out.writeObject(message);
             out.flush();
         } catch (IOException e) {
             System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
-
         }
     }
 }
