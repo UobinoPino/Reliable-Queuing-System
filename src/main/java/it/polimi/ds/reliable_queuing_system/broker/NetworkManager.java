@@ -15,6 +15,9 @@ import static it.polimi.ds.reliable_queuing_system.broker.Broker.electionInfo;
 
 /// A class containing useful static methods for inter-broker communication.
 public class NetworkManager {
+    /// Timeout used for socket connections
+    public static final int socketTimeout = 1000;
+
     /// Forwards the given message to the current system leader
     public static void forwardMessageToLeader(Message msg, SharedState sharedState) {
 
@@ -47,7 +50,7 @@ public class NetworkManager {
                 if (addr != null) {  // Safety check to ensure we have the address
                     try(Socket socket = new Socket()) {
                         SocketAddress socketAddress = new InetSocketAddress(addr.ip(), addr.port());
-                        socket.connect(socketAddress, 1000);  //TODO: check if it works and if so update this 1s timeout with a constant declared somewhere
+                        socket.connect(socketAddress, socketTimeout);
                         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
                         out.writeObject(message);
                         out.flush();

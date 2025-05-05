@@ -185,6 +185,13 @@ public class SharedState implements Serializable {
 
     /// Persist current state to disk
     public void persistState() {
+        // Create data directory if it doesn't exist
+        try {
+            Files.createDirectories(Paths.get(DATA_DIR));
+        } catch (IOException e) {
+            System.err.println("Failed to create data directory: " + e.getMessage());
+        }
+
         persistQueues();
         persistClientOffsets();
         persistClientAddresses();

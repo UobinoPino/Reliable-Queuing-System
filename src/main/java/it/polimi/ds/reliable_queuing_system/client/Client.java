@@ -1,5 +1,6 @@
 package it.polimi.ds.reliable_queuing_system.client;
 
+import it.polimi.ds.reliable_queuing_system.broker.NetworkManager;
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
@@ -8,6 +9,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
@@ -224,7 +226,9 @@ public class Client {
         boolean requestSent = false;
         while (!requestSent) {
             synchronized (clientStateLock) {
-                try (Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
+                try (Socket socket = new Socket()) {
+                    SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
+                    socket.connect(socketAddress, NetworkManager.socketTimeout);
                     ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
                     toBroker.writeObject(new ClientIdRequest(clientAddress));
                     toBroker.flush();

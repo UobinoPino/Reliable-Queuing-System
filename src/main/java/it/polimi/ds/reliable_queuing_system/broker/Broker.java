@@ -80,6 +80,7 @@ public class Broker {
                             brokerId = brokerJoinResponse.newBrokerId();
                             System.out.println("[INFO]: Not first, Broker " + brokerId + " started with address: " + brokerAddress);
                             sharedState = brokerJoinResponse.sharedState();
+                            sharedState.persistState();
                             brokerState = BrokerState.READY;
 
                             initializeManagers();
