@@ -187,23 +187,6 @@ public class MessageDispatcher {
                 NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), sharedState);
             } catch (RuntimeException e) {
                 System.out.println("[WARN]: Failed to send heartbeat acknowledgment. Leader may have crashed.");
-                // If we failed to connect to the leader, consider starting an election
-                if (!electionInfo.isElectionInProgress()) {
-                    // Initialize active brokers from sharedState for the election
-                    //electionInfo.updateActiveBrokers(sharedState.getBrokerAddresses().keySet());
-                    System.out.println("[INFO]: Initiating election due to connection failure to leader");
-                    // Similar logic to heartbeatMonitorTask - start election process
-                    sharedState.removeBrokerAddress(sharedState.getLeaderId());
-
-                    if (electionInfo.wasElectionInProgress()) {
-                        int myLogLength = sharedState.getLogLength();
-                        electionInfo.updateBestCandidate(brokerId, myLogLength);
-                        NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
-
-                        Address myAddress = sharedState.getBrokerAddress(brokerId);
-                        NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
-                    }
-                }
             }
         }
     }
@@ -317,9 +300,9 @@ public class MessageDispatcher {
                 heartbeatManager.restart();
 
                 // dispatch the received messages that had been delayed during the election
-                for (Message delayedMessage : delayedMessages) {
+                while(!delayedMessages.isEmpty()) {
                     try {
-                        dispatch(delayedMessage);
+                        dispatch(delayedMessages.poll());
                     } catch (ClassNotFoundException ignored) {
                         System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
                     }
@@ -347,9 +330,9 @@ public class MessageDispatcher {
             heartbeatManager.restart();
 
             // dispatch the received messages that had been delayed during the election
-            for (Message delayedMessage : delayedMessages) {
+            while(!delayedMessages.isEmpty()) {
                 try {
-                    dispatch(delayedMessage);
+                    dispatch(delayedMessages.poll());
                 } catch (ClassNotFoundException ignored) {
                     System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
                 }
