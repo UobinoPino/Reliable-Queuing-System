@@ -37,13 +37,13 @@ public class ElectionInfo {
         return electionInProgress.get();
     }
 
-    /// Returns whether there was an election currently in progress or not,
+    /// Returns true if there wasn't an election currently in progress (and false otherwise),
     /// and if there wasn't starts it by atomically changing the
     /// `electionInProgress` flag.
     ///
-    /// **NOTE:** it doesn't update all the other flags, so the `startElection`
+    /// **NOTE:** it doesn't update all the other flags, so the `updateBestCandidate`
     /// method should still be called after!
-    public boolean wasElectionInProgress() {
+    public boolean wasntElectionInProgress() {
         return electionInProgress.compareAndSet(false, true);
     }
 

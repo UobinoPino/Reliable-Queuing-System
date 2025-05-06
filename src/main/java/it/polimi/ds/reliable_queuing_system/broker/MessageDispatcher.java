@@ -35,8 +35,6 @@ public class MessageDispatcher {
             return;
         }
 
-        System.out.println("Received " + message);
-
         // else, handle the message accordingly
         switch (message) {
             case EntryPropagation msg -> handleEntryPropagation(msg);
@@ -81,6 +79,8 @@ public class MessageDispatcher {
     /// Handler method for received [EntryPropagation] messages.
     private void handleEntryPropagation(EntryPropagation msg) {
         if (!isLeader()) {
+            System.out.println("[INFO]: Received propagation of log entry" + msg.logEntry() + ". Adding it to the waiting queue...");
+
             // store the entry as waiting for commit
             sharedState.addWaitingCommitEntry(msg.logEntry());
 
@@ -94,6 +94,8 @@ public class MessageDispatcher {
     private void handleEntryPropagationAck(EntryPropagationAck msg) {
         if (isLeader()) {
             if(sharedState.isEntryWaitingAck(msg.logEntry())) {
+                System.out.println("[INFO]: Received propagation ACK for waiting log entry " + msg.logEntry() + ". Adding it to the log...");
+
                 // commit the entry locally
                 logManager.commitEntry(msg.logEntry());
 
@@ -106,6 +108,8 @@ public class MessageDispatcher {
     /// Handler method for received [EntryCommit] messages.
     private void handleEntryCommit(EntryCommit msg) {
         if (!isLeader()) {
+            System.out.println("[INFO]: Received commit of log entry" + msg.logEntry() + ". Adding it to the log...");
+
             // commit the entry locally
             logManager.commitEntry(msg.logEntry());
         }
@@ -114,6 +118,7 @@ public class MessageDispatcher {
     /// Handler method for received messages that doesn't need custom handler.
     /// (They will be propagated and wait for an ack from another node).
     private void handleGenericRequest(Message msg) {
+        System.out.println("[INFO]: Received " + msg);
         if (isLeader()) {
             // create a new log entry for given request
             LogEntry newEntry = new LogEntry(sharedState.getLogLength(), msg);
@@ -134,6 +139,7 @@ public class MessageDispatcher {
                 NetworkManager.forwardMessageToLeader(msg, sharedState);
             } catch (RuntimeException e) {
                 // if leader is not reachable, store the message so that it will be handled after the election
+                System.out.println("[INFO]: Delaying the message to be handled after the election.");
                 delayedMessages.add(msg);
             }
         }
@@ -141,6 +147,8 @@ public class MessageDispatcher {
 
     /// Handler for received [ReadRequest] messages.
     private void handleReadRequest(ReadRequest msg) {
+        System.out.println("[INFO]: Received read request " + msg);
+
         // retrieve the values to be returned to the client
         List<Integer> valuesToReturn = new ArrayList<>();
         List<Integer> requestedQueue = sharedState.getQueue(msg.queueName());
@@ -163,8 +171,8 @@ public class MessageDispatcher {
     private void handleBrokerRemoval(BrokerRemoval msg) {
         // Only process if we're not the leader (leader already removed the broker before broadcasting the BrokerRemoval message)
         if (!isLeader()) {
+            System.out.println("[INFO]: Received broker removal notification for broker " + msg.brokerId() + ". Removing...");
             sharedState.removeBrokerAddress(msg.brokerId());
-            System.out.println("[INFO]: Follower " + brokerId + ": Received broker removal notification for broker " + msg.brokerId());
         }
     }
 
@@ -185,8 +193,8 @@ public class MessageDispatcher {
             // Send HeartbeatAck to the leader
             try {
                 NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), sharedState);
-            } catch (RuntimeException e) {
-                System.out.println("[WARN]: Failed to send heartbeat acknowledgment. Leader may have crashed.");
+            } catch (RuntimeException ignored) {
+                // doing nothing as the Heartbeat monitor thread will detect the crash and act accordingly
             }
         }
     }
@@ -206,7 +214,7 @@ public class MessageDispatcher {
         System.out.println("[INFO]: Received leader nomination from broker " + msg.brokerId() + " with log length " + msg.logLength());
 
         // If this is the first nomination received...
-        if (electionInfo.wasElectionInProgress()) {
+        if (electionInfo.wasntElectionInProgress()) {
             // remove the leader from the list of known brokers
             sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
@@ -282,9 +290,7 @@ public class MessageDispatcher {
 
             // if all ACKs have been received...
             if (receivedAcksCount >= activeBrokersCount) {
-                System.out.println("[INFO]: Consensus achieved. Becoming new leader");
-                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount +
-                        " active brokers. Becoming new leader");
+                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
 
                 // become leader
                 sharedState.setNewLeaderId(brokerId);
@@ -302,7 +308,9 @@ public class MessageDispatcher {
                 // dispatch the received messages that had been delayed during the election
                 while(!delayedMessages.isEmpty()) {
                     try {
-                        dispatch(delayedMessages.poll());
+                        Message delayedMsg = delayedMessages.poll();
+                        System.out.println("[INFO]: Dispatching message " + delayedMsg + " delayed during election");
+                        dispatch(delayedMsg);
                     } catch (ClassNotFoundException ignored) {
                         System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
                     }
@@ -332,7 +340,9 @@ public class MessageDispatcher {
             // dispatch the received messages that had been delayed during the election
             while(!delayedMessages.isEmpty()) {
                 try {
-                    dispatch(delayedMessages.poll());
+                    Message delayedMsg = delayedMessages.poll();
+                    System.out.println("[INFO]: Dispatching message " + delayedMsg + " delayed during election");
+                    dispatch(delayedMsg);
                 } catch (ClassNotFoundException ignored) {
                     System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
                 }

@@ -37,7 +37,7 @@ public class Broker {
             sharedState = new SharedState();
             brokerId = sharedState.getNewBrokerId();
             sharedState.addBrokerAddress(brokerId, brokerAddress);
-            System.out.println("[INFO]: First, Broker " + brokerId + " started with address: " + brokerAddress);
+            System.out.println("[INFO]: First broker " + brokerId + " started with address: " + brokerAddress);
             sharedState.setNewLeaderId(brokerId);
 
             initializeManagers();
@@ -65,7 +65,6 @@ public class Broker {
         }
 
         try(ServerSocket serverSocket = new ServerSocket(brokerAddress.port())) {
-            System.out.println("[INFO]: Broker ready to receive messages at port: " + brokerAddress.port());
 
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
@@ -77,7 +76,7 @@ public class Broker {
                     if (brokerState == BrokerState.WAITING_JOIN) {
                         if (message instanceof BrokerJoinResponse brokerJoinResponse) {
                             brokerId = brokerJoinResponse.newBrokerId();
-                            System.out.println("[INFO]: Not first, Broker " + brokerId + " started with address: " + brokerAddress);
+                            System.out.println("[INFO]: Non-first broker " + brokerId + " started with address: " + brokerAddress);
                             sharedState = brokerJoinResponse.sharedState();
                             sharedState.persistState();
                             brokerState = BrokerState.READY;

@@ -104,7 +104,9 @@ public class HeartbeatManager {
 
             if (leaderFailed) {
                 // if still no election is in progress, start the election
-                if (electionInfo.wasElectionInProgress()) {
+                if (electionInfo.wasntElectionInProgress()) {
+                    System.out.println("[INFO]: Leader failure detected. Starting leader election by proposing self as candidate.");
+
                     // remove the leader from the list of known brokers
                     sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
@@ -150,7 +152,9 @@ public class HeartbeatManager {
                     removedBrokers.add(bId);
                     sharedState.removeBrokerAddress(bId);
                     missedHeartbeats.remove(bId);
+
                     // If an election is in progress, update the active brokers list
+                    //TODO: ma questo metodo viene mai chiamato quando una election è già in progress?
                     if (electionInfo.isElectionInProgress()) {
                         // If the failed broker was the best candidate in the election, restart the election
                         if (electionInfo.getBestCandidate() == bId) {
@@ -197,7 +201,7 @@ public class HeartbeatManager {
             // Only consider leader failed after multiple missed heartbeats
             if (missed > MISSABLE_HEARTBEATS) {
                 // Follower suspects leader is dead
-                System.out.println("Considering leader failed. (Starting leader election)");
+                System.out.println("Considering leader failed.");
                 missedHeartbeats.remove(leaderId);
                 return true;
             } else {

@@ -268,9 +268,7 @@ public class LoadTestClient {
     private Socket getConnection() throws IOException {
         Socket socket = connectionPool.poll();
         if (socket == null || socket.isClosed()) {
-            socket = new Socket();
-            SocketAddress socketAddress = new InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
-            socket.connect(socketAddress, NetworkManager.socketTimeout);
+            socket = new Socket(brokerAddress.ip(), brokerAddress.port());
             socket.setKeepAlive(true);
         }
         return socket;

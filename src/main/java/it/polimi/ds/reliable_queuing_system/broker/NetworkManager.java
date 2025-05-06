@@ -37,7 +37,9 @@ public class NetworkManager {
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
             out.writeObject(msg);
             out.flush();
+            System.out.println("[INFO]: Message " + msg + " forwarded to leader " + leaderId);
         } catch (IOException e) {
+            System.out.println("[WARN]: Unable to forward the message " + msg + " to the leader " + leaderId + ". It has probably crashed.");
             throw new RuntimeException(e);
         }
     }
@@ -46,6 +48,8 @@ public class NetworkManager {
     public static void broadcastMessage(Message message, int myId, SharedState sharedState) {
         Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
         Set<Integer> brokerIds = brokerAddresses.keySet();
+
+        System.out.println("[INFO]: Trying to broadcast message " + message + " to brokers " + brokerIds + "...");
 
         for (Integer id : brokerIds) {
             if (id != myId) {
@@ -79,6 +83,8 @@ public class NetworkManager {
             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
             out.writeObject(message);
             out.flush();
+
+            System.out.println("[INFO]: Sent message " + message + " to " + address + "...");
         } catch (IOException e) {
             System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
         }
