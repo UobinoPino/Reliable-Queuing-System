@@ -115,9 +115,7 @@ public class HeartbeatManager {
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
                     NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
-                    // send to self an ACK for own nomination
-                    Address myAddress = sharedState.getBrokerAddress(brokerId);
-                    NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
+
                 }
                 else {
                     System.out.println("[INFO]: Leader failure detected but someone has already started an election in the meantime.");
@@ -166,9 +164,7 @@ public class HeartbeatManager {
                             electionInfo.updateBestCandidate(brokerId, myLogLength);
                             NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
-                            // Send to self an ACK for own nomination
-                            Address myAddress = sharedState.getBrokerAddress(brokerId);
-                            NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
+//
                         }
                     }
                 }

@@ -245,9 +245,6 @@ public class MessageDispatcher {
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
                 NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
-                // send to self an ACK for own nomination
-                Address myAddress = sharedState.getBrokerAddress(brokerId);
-                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), myAddress);
             }
         }
         // else (an election was already in progress)...
@@ -289,7 +286,7 @@ public class MessageDispatcher {
             System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
 
             // if all ACKs have been received...
-            if (receivedAcksCount >= activeBrokersCount) {
+            if (receivedAcksCount >= activeBrokersCount - 1) {
                 System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
 
                 // become leader

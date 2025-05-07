@@ -10,83 +10,91 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.*;
 
-import static it.polimi.ds.reliable_queuing_system.broker.Broker.electionInfo;
-
-/// A class containing useful static methods for inter-broker communication.
+/**
+ * NetworkManager with proper pooling of Socket + ObjectOutputStream so that
+ * we only ever write one stream header per connection.
+ */
 public class NetworkManager {
-    /// Timeout used for socket connections
-    public static final int socketTimeout = 1000;
+    public static final int socketTimeout = 3000;
+    private static final int PER_PEER_POOL_SIZE = 5000;
 
-    /// Forwards the given message to the current system leader
-    /// (or throws a `RuntimeException` if the leader is not reachable)
-    public static void forwardMessageToLeader(Message msg, SharedState sharedState) {
+    // pool of live connections (socket + cached ObjectOutputStream)
+    private static final ConcurrentMap<Address, BlockingQueue<PooledConn>> pools = new ConcurrentHashMap<>();
 
-        if (electionInfo.isElectionInProgress()) {
-            System.out.println("[INFO]: Election in progress, message forwarding to leader skipped");
-            return;
+    public static final ElectionInfo electionInfo = Broker.electionInfo;
+
+    private static class PooledConn {
+        final Socket socket;
+        final ObjectOutputStream out;
+        PooledConn(Socket s, ObjectOutputStream o) { socket = s; out = o; }
+    }
+
+    private static PooledConn borrowConn(Address peer) throws IOException {
+        BlockingQueue<PooledConn> q = pools.computeIfAbsent(peer,
+                __ -> new LinkedBlockingQueue<>(PER_PEER_POOL_SIZE));
+        PooledConn pc = q.poll();
+        if (pc != null && pc.socket.isConnected() && !pc.socket.isClosed()) {
+            return pc;
         }
+        // create new socket+OOS header
+        Socket sock = new Socket();
+        SocketAddress sa = new InetSocketAddress(peer.ip(), peer.port());
+        sock.connect(sa, socketTimeout);
+        ObjectOutputStream oos = new ObjectOutputStream(sock.getOutputStream());
+        return new PooledConn(sock, oos);
+    }
 
-        int leaderId = sharedState.getLeaderId();
-
-        Address leaderAddr = sharedState.getBrokerAddress(leaderId);
-
-        try(Socket socket = new Socket()) {
-            SocketAddress socketAddress = new InetSocketAddress(leaderAddr.ip(), leaderAddr.port());
-            socket.connect(socketAddress, socketTimeout);
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(msg);
-            out.flush();
-            System.out.println("[INFO]: Message " + msg + " forwarded to leader " + leaderId);
-        } catch (IOException e) {
-            System.out.println("[WARN]: Unable to forward the message " + msg + " to the leader " + leaderId + ". It has probably crashed.");
-            throw new RuntimeException(e);
+    private static void returnConn(Address peer, PooledConn pc) {
+        if (pc == null || pc.socket.isClosed()) return;
+        BlockingQueue<PooledConn> q = pools.get(peer);
+        if (q == null || !q.offer(pc)) {
+            // pool full or missing -> close
+            try { pc.socket.close(); } catch (IOException ignored) {}
         }
     }
 
-    /// Tries to broadcast the given [Message] to all other brokers in the system
-    public static void broadcastMessage(Message message, int myId, SharedState sharedState) {
-        Map<Integer, Address> brokerAddresses = sharedState.getBrokerAddresses();
-        Set<Integer> brokerIds = brokerAddresses.keySet();
+    public static void sendMessage(Message msg, Address peer) {
+        PooledConn pc = null;
+        try {
+            pc = borrowConn(peer);
+            // reuse the same ObjectOutputStream
+            pc.out.writeObject(msg);
+            pc.out.reset();    // clear handle cache so next object is not deduped
+            pc.out.flush();
+            System.out.println("[INFO]: Sent " + msg + " → " + peer);
+            returnConn(peer, pc);
+        } catch (IOException e) {
+            // on fail drop this conn
+            if (pc != null) try { pc.socket.close(); } catch (IOException ignored) {}
+            System.out.println("[WARN]: sendMessage failed to " + peer + ": " + e.getMessage());
+        }
+    }
 
-        System.out.println("[INFO]: Trying to broadcast message " + message + " to brokers " + brokerIds + "...");
+    public static void forwardMessageToLeader(Message msg, SharedState state) {
+        if (electionInfo.isElectionInProgress()) return;
+        Address leader = state.getBrokerAddress(state.getLeaderId());
+        sendMessage(msg, leader);
+    }
 
-        for (Integer id : brokerIds) {
-            if (id != myId) {
-                Address addr = brokerAddresses.get(id);
-                if (addr != null) {  // Safety check to ensure we have the address
-                    try(Socket socket = new Socket()) {
-                        SocketAddress socketAddress = new InetSocketAddress(addr.ip(), addr.port());
-                        socket.connect(socketAddress, socketTimeout);
-                        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                        out.writeObject(message);
-                        out.flush();
-                    } catch (IOException e) {
-                        System.out.println("[ERROR]: Unable to broadcast the message to node " + id + ". It has probably crashed");
+    public static void broadcastMessage(Message msg, int myId, SharedState state) {
+        Set<Map.Entry<Integer,Address>> peers = state.getBrokerAddresses().entrySet();
+        for (var e : peers) {
+            if (e.getKey() == myId) continue;
+            sendMessage(msg, e.getValue());
+        }
+    }
 
-                        // If we're in an election and encounter a failure, remove the broker
-                        if (electionInfo.isElectionInProgress()) {
-                            sharedState.removeBrokerAddress(id);
-                            System.out.println("[INFO]: Removed crashed broker " + id + " from broker list");
-                        }
-                    }
-                }
+    /** Graceful shutdown: close all pooled sockets */
+    public static void shutdown() {
+        pools.forEach((peer, q) -> {
+            PooledConn pc;
+            while ((pc = q.poll()) != null) {
+                try { pc.socket.close(); } catch (IOException ignored) {}
             }
-        }
+        });
+        pools.clear();
     }
 
-    /// Tries to send the given [Message] to the given [Address]
-    public static void sendMessage(Message message, Address address) {
-        try(Socket socket = new Socket()) {
-            SocketAddress socketAddress = new InetSocketAddress(address.ip(), address.port());
-            socket.connect(socketAddress, socketTimeout);
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(message);
-            out.flush();
-
-            System.out.println("[INFO]: Sent message " + message + " to " + address + "...");
-        } catch (IOException e) {
-            System.out.println("Failed to send message to " + address + ":  it has probably crashed.");
-        }
-    }
 }

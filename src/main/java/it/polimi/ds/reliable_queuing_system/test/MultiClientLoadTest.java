@@ -63,14 +63,14 @@ public class MultiClientLoadTest {
                     clientId,
                     operationsPerClient,
                     threadsPerClient,
-                    3000, // timeout
+                    120, // max duration of the test in seconds
                     readWriteRatio,
                     queueIds,
                     1, // min value
                     1000, // max value
-                    500, // operation delay
+                    200, // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
-                    maxPoolSize // connection pool size
+                    maxPoolSize// connection pool size
 
             );
 
@@ -94,15 +94,18 @@ public class MultiClientLoadTest {
                     totalFailedOperations.addAndGet(client.getFailedOperations());
                     totalLatency.addAndGet(client.getTotalLatency());
 
+
                     clientsCompletionLatch.countDown();
                 } catch (InterruptedException e) {
                     System.err.println("Client test interrupted: " + e.getMessage());
                     clientsCompletionLatch.countDown();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
                 }
             }).start();
 
             try {
-                Thread.sleep(50); // Start 20 clients per second
+                Thread.sleep(100); // Start  10  clients per second
             } catch (InterruptedException e) {
                 System.err.println("Startup sequence interrupted");
             }

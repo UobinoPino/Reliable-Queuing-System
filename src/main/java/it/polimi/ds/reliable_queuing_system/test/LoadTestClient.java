@@ -1,6 +1,5 @@
 package it.polimi.ds.reliable_queuing_system.test;
 
-import it.polimi.ds.reliable_queuing_system.broker.NetworkManager;
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
@@ -27,8 +26,10 @@ public class LoadTestClient {
     private final ConcurrentHashMap<String, AtomicInteger> queueWrites = new ConcurrentHashMap<>();
     private volatile boolean running = true;
 
-    private final ConcurrentLinkedQueue<Socket> connectionPool = new ConcurrentLinkedQueue<>();
-    static int maxPoolSize = 0;
+    // Connection pool settings
+    static int maxPoolSize = 100;
+    private static final int CONNECTION_TIMEOUT = 30000;
+    private static final int SOCKET_TIMEOUT = 5000;
 
     // Direct config variables
     private final int totalOperations;
@@ -67,7 +68,7 @@ public class LoadTestClient {
         this.maxValue = maxValue;
         this.operationDelayMs = operationDelayMs;
         this.verboseLogging = verboseLogging;
-        this.maxPoolSize = maxPoolSize;
+        LoadTestClient.maxPoolSize = maxPoolSize;
         this.completionLatch = new CountDownLatch(totalOperations);
         this.executorService = Executors.newFixedThreadPool(concurrentThreads);
 
@@ -77,12 +78,39 @@ public class LoadTestClient {
         }
     }
 
-    private void closeAllConnections() {
+    private static class PooledConnection {
         Socket socket;
-        while ((socket = connectionPool.poll()) != null) {
+        ObjectOutputStream outputStream;
+        ObjectInputStream inputStream;
+
+        public PooledConnection(Socket socket) throws IOException {
+            this.socket = socket;
+            this.outputStream = new ObjectOutputStream(socket.getOutputStream());
+            this.outputStream.flush(); // Important: flush the header immediately
+        }
+
+        public ObjectInputStream getInputStream() throws IOException {
+            if (inputStream == null) {
+                inputStream = new ObjectInputStream(socket.getInputStream());
+            }
+            return inputStream;
+        }
+
+        public void close() {
             try {
-                socket.close();
+                if (socket != null && !socket.isClosed()) {
+                    socket.close();
+                }
             } catch (IOException ignored) {}
+        }
+    }
+
+    private final BlockingQueue<PooledConnection> connectionPool = new LinkedBlockingQueue<>(maxPoolSize);
+
+    private void closeAllConnections() {
+        PooledConnection conn;
+        while ((conn = connectionPool.poll()) != null) {
+            conn.close();
         }
     }
 
@@ -119,26 +147,24 @@ public class LoadTestClient {
                     if (operationDelayMs > 0) {
                         Thread.sleep(operationDelayMs);
                     }
-                } catch (Exception e) {
+                } catch (InterruptedException e) {
+                    // we were shut down—no need to log
+                    return;
+                }catch (Exception e) {
                     System.err.println("Error performing operation " + operationIndex + ": " + e.getMessage());
                     String errorType = e.getClass().getSimpleName();
                     String errorDetail = e.getMessage();
                     System.err.println("Error performing operation " + operationIndex +
                             " (" + errorType + "): " + errorDetail);
 
-                    // Log the full stack trace for more details
-                    e.printStackTrace();
-
-                    // Track specific error types for better analysis
-                    if (e instanceof IOException) {
-                        System.err.println("  Network error - likely connection issue with broker at "
-                                + brokerAddress);
-                    } else if (e instanceof InterruptedException) {
-                        System.err.println("  Thread was interrupted during operation delay");
-                    } else if (e instanceof NullPointerException) {
-                        System.err.println("  Null reference error - possibly invalid queue ID: " +
-                                (e.getMessage() != null ? e.getMessage() : "unknown"));
+                    if (verboseLogging) {
+                        e.printStackTrace();
                     }
+
+                    if (e instanceof IOException) {
+                        System.err.println("  Network error with broker at " + brokerAddress);
+                    }
+
                     failedOperations.incrementAndGet();
                     completionLatch.countDown();
                 }
@@ -151,7 +177,16 @@ public class LoadTestClient {
         // Test finished
         running = false;
         long endTime = System.currentTimeMillis();
-        executorService.shutdown();
+        executorService.shutdownNow();
+        try {
+                       if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                                executorService.shutdownNow();
+                           }
+                    } catch (InterruptedException ie) {
+                        executorService.shutdownNow();
+                        Thread.currentThread().interrupt();
+                    }
+        closeAllConnections();
 
         // Print results
         System.out.println("\n===== LOAD TEST RESULTS =====");
@@ -170,8 +205,6 @@ public class LoadTestClient {
         for (Map.Entry<String, AtomicInteger> entry : queueWrites.entrySet()) {
             System.out.println("  Queue " + entry.getKey() + ": " + entry.getValue().get() + " writes");
         }
-
-        closeAllConnections();
     }
 
     private String getConfigString() {
@@ -184,6 +217,7 @@ public class LoadTestClient {
                 ", valueRange=[" + minValue + "-" + maxValue + "]" +
                 ", operationDelayMs=" + operationDelayMs +
                 ", verboseLogging=" + verboseLogging +
+                ", maxPoolSize=" + maxPoolSize +
                 '}';
     }
 
@@ -194,7 +228,7 @@ public class LoadTestClient {
             while (running) {
                 try {
                     Socket socket = serverSocket.accept();
-                    socket.setSoTimeout(5000); // 5 second timeout for reading
+                    socket.setSoTimeout(SOCKET_TIMEOUT);
                     CompletableFuture.runAsync(() -> handleIncomingConnection(socket));
                 } catch (IOException e) {
                     if (running) {
@@ -207,25 +241,43 @@ public class LoadTestClient {
         }
     }
 
-    private void handleIncomingConnection(Socket socket) {
-        try (ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
-            Message message = (Message) in.readObject();
-
-            switch (message) {
-                case ReadResponse msg -> handleReadResponse(msg);
-                case ReadConfirmation msg -> handleReadConfirmation(msg);
-                case WriteResponse msg -> handleWriteResponse(msg);
-                default -> System.out.println("Received unexpected message type: " + message.getClass().getSimpleName());
-            }
-        } catch (Exception e) {
-            // Simply log the error and continue
-            System.err.println("Error handling incoming message: " + e.getMessage());
-        } finally {
-            try {
-                socket.close();
-            } catch (IOException ignored) {}
-        }
-    }
+  private void handleIncomingConnection(Socket socket) {
+      ObjectInputStream in = null;
+      try {
+          in = new ObjectInputStream(socket.getInputStream());
+          // Continuously read messages until shutdown or socket error
+          while (running && !socket.isClosed()) {
+              try {
+                  Message message = (Message) in.readObject();
+                  switch (message) {
+                      case ReadResponse msg -> handleReadResponse(msg);
+                      case ReadConfirmation msg -> handleReadConfirmation(msg);
+                      case WriteResponse msg -> handleWriteResponse(msg);
+                      default -> {
+                          if (verboseLogging) {
+                              System.out.println("Received unexpected message type: " + message.getClass().getSimpleName());
+                          }
+                      }
+                  }
+              } catch (SocketTimeoutException ste) {
+                  // no data within timeout; loop back to check running flag
+              } catch (IOException | ClassNotFoundException e) {
+                  if (running) {
+                      System.err.println("Error handling incoming message on socket: " + e.getMessage());
+                  }
+                  break; // exit loop on fatal read error
+              }
+          }
+      } catch (IOException e) {
+          System.err.println("Error initializing incoming connection: " + e.getMessage());
+      } finally {
+          // Clean up
+          try {
+              if (in != null) in.close();
+              socket.close();
+          } catch (IOException ignored) {}
+      }
+  }
 
     private void handleReadResponse(ReadResponse msg) {
         // Just logging for debugging if needed
@@ -264,36 +316,49 @@ public class LoadTestClient {
         }
     }
 
-    // Get a connection from the pool or create a new one
-    private Socket getConnection() throws IOException {
-        Socket socket = connectionPool.poll();
-        if (socket == null || socket.isClosed()) {
-            socket = new Socket(brokerAddress.ip(), brokerAddress.port());
-            socket.setKeepAlive(true);
+    private PooledConnection getConnection() throws IOException {
+        PooledConnection connection = connectionPool.poll();
+
+        // Validate connection before using
+        if (connection != null) {
+            if (!connection.socket.isConnected() || connection.socket.isClosed()) {
+                connection.close();
+                connection = null;
+            }
         }
-        return socket;
+
+        // Create new connection if needed
+        if (connection == null) {
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(brokerAddress.ip(), brokerAddress.port()), CONNECTION_TIMEOUT);
+            connection = new PooledConnection(socket);
+        }
+
+        return connection;
     }
 
-    // Return a connection to the pool
-    private void returnConnection(Socket socket) {
-        if (socket != null && !socket.isClosed() && connectionPool.size() < maxPoolSize) {
-            connectionPool.add(socket);
-        } else if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {}
+    private void returnConnection(PooledConnection connection) {
+        if (connection != null && connection.socket.isConnected() &&
+                !connection.socket.isClosed()) {
+            // Return to pool or close based on pool size
+            if (!connectionPool.offer(connection)) {
+                connection.close();
+            }
+        } else if (connection != null) {
+            connection.close();
         }
     }
 
     private void performRead(String queueId) throws IOException {
-        Socket socket = null;
+        PooledConnection connection = null;
         try {
-            socket = getConnection();
+            connection = getConnection();
             int operationId = nextOperationId.getAndIncrement();
 
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(new ReadRequest(queueId, clientId, operationId, clientAddress));
-            out.flush();
+            // Send request using cached output stream
+            connection.outputStream.writeObject(new ReadRequest(queueId, clientId, operationId, clientAddress));
+            connection.outputStream.reset(); // Reset object cache to prevent memory leaks
+            connection.outputStream.flush();
 
             pendingOperations.put(operationId, System.currentTimeMillis());
 
@@ -301,19 +366,20 @@ public class LoadTestClient {
                 System.out.println("Sent read request for queue " + queueId + " (operation " + operationId + ")");
             }
         } finally {
-            returnConnection(socket);
+            returnConnection(connection);
         }
     }
 
     private void performWrite(String queueId, Integer value) throws IOException {
-        Socket socket = null;
+        PooledConnection connection = null;
         try {
-            socket = getConnection();
+            connection = getConnection();
             int operationId = nextOperationId.getAndIncrement();
 
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(new WriteRequest(queueId, value, clientId, operationId, clientAddress));
-            out.flush();
+            // Send request using cached output stream
+            connection.outputStream.writeObject(new WriteRequest(queueId, value, clientId, operationId , clientAddress));
+            connection.outputStream.reset(); // Reset object cache to prevent memory leaks
+            connection.outputStream.flush();
 
             pendingOperations.put(operationId, System.currentTimeMillis());
 
@@ -322,7 +388,7 @@ public class LoadTestClient {
                         " (operation " + operationId + ")");
             }
         } finally {
-            returnConnection(socket);
+            returnConnection(connection);
         }
     }
 
@@ -344,7 +410,6 @@ public class LoadTestClient {
             System.out.println("======== RELIABLE QUEUING SYSTEM: LOAD TEST CLIENT ========");
 
             // Interactive configuration for easier use in IntelliJ
-            // You can change these values directly in the code for faster testing
             Scanner scanner = new Scanner(System.in);
 
             System.out.print("Enter broker address (ip:port) [default: 127.0.0.1:8080]: ");
@@ -369,7 +434,7 @@ public class LoadTestClient {
             String ratioInput = scanner.nextLine().trim();
             double readWriteRatio = ratioInput.isEmpty() ? 0.3 : Double.parseDouble(ratioInput);
 
-            System.out.print("Enter queue IDs separated by commas [default: queue1,queue2,queue3, queue4, queue5]: ");
+            System.out.print("Enter queue IDs separated by commas [default: queue1,queue2,queue3,queue4,queue5]: ");
             String queueInput = scanner.nextLine().trim();
             String[] queueIds = queueInput.isEmpty() ?
                     new String[]{"queue1", "queue2", "queue3", "queue4", "queue5"} :
@@ -398,14 +463,14 @@ public class LoadTestClient {
                     clientId,
                     totalOperations,
                     concurrentThreads,
-                    300, // 5 minutes timeout
+                    200,  // max duration in seconds of the simulation
                     readWriteRatio,
                     queueIds,
-                    1, // min value
+                    1,    // min value
                     1000, // max value
-                    100, // operation delay ms
+                    10,   // operation delay ms
                     verboseLogging,
-                    maxPoolSize  // max pool size
+                    poolSize  // max pool size
             );
 
             loadTestClient.startTest();

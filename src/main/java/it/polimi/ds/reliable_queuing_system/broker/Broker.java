@@ -3,28 +3,54 @@ package it.polimi.ds.reliable_queuing_system.broker;
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.*;
-import java.util.*;
+import java.util.Arrays;
+import java.util.InputMismatchException;
+import java.util.Scanner;
+import java.util.concurrent.*;
 
+/**
+ * Broker entry point. Uses a fixed thread‐pool to handle each incoming socket.
+ * Each connection is read in a loop (readObject until EOF) so pooled sockets
+ * (used by NetworkManager) can carry multiple messages (heartbeats, dispatch calls, ...).
+ */
 public class Broker {
     private static final Scanner scanner = new Scanner(System.in);
 
     private static Address brokerAddress;
-
     private static SharedState sharedState;
     private static Integer brokerId;
     private static HeartbeatManager heartbeatManager;
     private static LogManager logManager;
     private static MessageDispatcher messageDispatcher;
-
     private static BrokerState brokerState;
-
     public static final ElectionInfo electionInfo = new ElectionInfo();
 
-    public static void main(String[] args) {
+    // pool for handling connections in parallel
+    private static final ExecutorService connectionPool = Executors.newFixedThreadPool(100);
+    private static void joinCluster() {
+        boolean requestSent = false;
+        while (!requestSent) {
+            Address known = obtainKnownBrokerAddress();
+            try (Socket sock = new Socket()) {
+                sock.connect(new InetSocketAddress(known.ip(), known.port()), NetworkManager.socketTimeout);
+                ObjectOutputStream out = new ObjectOutputStream(sock.getOutputStream());
+                out.writeObject(new BrokerJoinRequest(brokerAddress));
+                out.flush();
+
+                brokerState = BrokerState.WAITING_JOIN;
+                requestSent = true;
+                System.out.println("[INFO]: Sent join request to " + known);
+            } catch (IOException e) {
+                System.out.println("[ERROR]: Could not connect to broker at " + known + ". Try again.");
+            }
+        }
+    }
+    public static void main(String[] args) throws IOException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: BROKER ========");
 
         // ask user to choose port
@@ -32,76 +58,79 @@ public class Broker {
         Integer brokerPort = obtainBrokerPort();
         brokerAddress = new Address(brokerIp, brokerPort);
 
-        // obtain the correct sharedState and brokerId, depending on if this broker is the first broker of the system or not
+        // first broker vs join logic unchanged
         if (Arrays.asList(args).contains("--first")) {
             sharedState = new SharedState();
             brokerId = sharedState.getNewBrokerId();
             sharedState.addBrokerAddress(brokerId, brokerAddress);
-            System.out.println("[INFO]: First broker " + brokerId + " started with address: " + brokerAddress);
+            System.out.println("[INFO]: First broker " + brokerId + " on " + brokerAddress);
             sharedState.setNewLeaderId(brokerId);
-
             initializeManagers();
-        }
-        else {
-            boolean requestSent = false;
-            while (!requestSent) {
-                // ask the user to specify the address of a known broker
-                Address knownBrokerAddress = obtainKnownBrokerAddress();
-
-                // send the join request to the known broker
-                try(Socket socket = new Socket()) {
-                    SocketAddress socketAddress = new InetSocketAddress(knownBrokerAddress.ip(), knownBrokerAddress.port());
-                    socket.connect(socketAddress, NetworkManager.socketTimeout);
-                    ObjectOutputStream toExistingBroker = new ObjectOutputStream(socket.getOutputStream());
-                    toExistingBroker.writeObject(new BrokerJoinRequest(brokerAddress));
-                    toExistingBroker.flush();
-
-                    brokerState = BrokerState.WAITING_JOIN;
-                    requestSent = true;
-                } catch (IOException e) {
-                    System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
-                }
-            }
+            brokerState = BrokerState.READY;
+        } else {
+            joinCluster();
         }
 
-        try(ServerSocket serverSocket = new ServerSocket(brokerAddress.port())) {
-
+        // accept loop – submit each socket to connectionPool
+        try (ServerSocket serverSocket = new ServerSocket(brokerAddress.port())) {
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
-                ObjectInputStream in  = new ObjectInputStream(socket.getInputStream());
-
-                try {
-                    Message message = (Message) in.readObject();
-
-                    if (brokerState == BrokerState.WAITING_JOIN) {
-                        if (message instanceof BrokerJoinResponse brokerJoinResponse) {
-                            brokerId = brokerJoinResponse.newBrokerId();
-                            System.out.println("[INFO]: Non-first broker " + brokerId + " started with address: " + brokerAddress);
-                            sharedState = brokerJoinResponse.sharedState();
-                            sharedState.persistState();
-                            brokerState = BrokerState.READY;
-
-                            initializeManagers();
-                        }
-                        else {
-                            System.out.println("[INFO]: Received message before joining the cluster. It will be ignored.");
-                        }
-                    }
-                    else {
-                        messageDispatcher.dispatch(message);
-                    }
-                } catch (ClassNotFoundException | ClassCastException ignored) {
-                    System.out.println("[INFO]: Unknown message received, it will be ignored.");
-                }
+                connectionPool.submit(() -> handleConnection(socket));
             }
-        } catch(IOException e) {
+        } catch (IOException e) {
             System.out.println("[FATAL ERROR] " + e.getMessage());
             System.exit(1);
+        } finally {
+            shutdown();
         }
     }
 
+    private static void handleConnection(Socket socket) {
+        try (Socket s = socket;
+             ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
 
-    /// Returns the ip of the node this class is executed on
+            // Continually read messages on this socket until peer closes it
+            while (true) {
+                Message msg;
+                try {
+                    msg = (Message) in.readObject();
+                } catch (EOFException eof) {
+                    break; // peer closed stream
+                }
+
+                if (brokerState == BrokerState.WAITING_JOIN) {
+                    if (msg instanceof BrokerJoinResponse resp) {
+                        brokerId = resp.newBrokerId();
+                        sharedState = resp.sharedState();
+                        sharedState.persistState();
+                        brokerState = BrokerState.READY;
+                        initializeManagers();
+                        System.out.println("[INFO]: Joined cluster as broker " + brokerId);
+                    } else {
+                        System.out.println("[INFO]: Ignoring pre-join message: " + msg);
+                    }
+                } else {
+                    messageDispatcher.dispatch(msg);
+                }
+            }
+        } catch (ClassNotFoundException | IOException e) {
+            System.out.println("[INFO]: Connection handler error: " + e.getMessage());
+        }
+    }
+
+    private static void shutdown() {
+        connectionPool.shutdown();
+        try {
+            if (!connectionPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                connectionPool.shutdownNow();
+            }
+        } catch (InterruptedException ignored) {
+            connectionPool.shutdownNow();
+        }
+        NetworkManager.shutdown(); // clean up pooled sockets
+    }
+
+        /// Returns the ip of the node this class is executed on
     /// (or localhost ip if unable to determine it).
     private static String obtainBrokerIp() {
         try {
