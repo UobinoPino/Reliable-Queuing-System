@@ -1,16 +1,10 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
-import it.polimi.ds.reliable_queuing_system.messages.BrokerRemoval;
-import it.polimi.ds.reliable_queuing_system.messages.Heartbeat;
-import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNomination;
-import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNominationAck;
+import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /// A class that will take care of the heartbeat mechanism to detect eventual crashes of other brokers.
 public class HeartbeatManager {
@@ -19,6 +13,7 @@ public class HeartbeatManager {
         this.sharedState = sharedState;
         this.electionInfo = electionInfo;
         this.heartbeatThreadExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.ackExecutor = Executors.newCachedThreadPool();
 
         this.lastHeartbeats = new ConcurrentHashMap<>();
         this.missedHeartbeats = new ConcurrentHashMap<>();
@@ -34,16 +29,26 @@ public class HeartbeatManager {
     public static final long HEARTBEAT_TIMEOUT_MS = 10000;
 
     /// Maximum number of heartbeats that a follower can miss before being considered as crashed.
-    public static final int MISSABLE_HEARTBEATS = 2;
+    public static final int MISSABLE_HEARTBEATS = 3;
 
     private final int brokerId;
     private final SharedState sharedState;
     private final ElectionInfo electionInfo;
     private ScheduledExecutorService heartbeatThreadExecutor;
+    private final ExecutorService ackExecutor;
 
     private final Map<Integer, Long> lastHeartbeats;
     private final Map<Integer, Integer> missedHeartbeats;
 
+
+    /**
+     * Offload sending HeartbeatAck to dedicated executor
+     */
+    public void sendAck(int followerId) {
+        ackExecutor.submit(() ->
+                NetworkManager.forwardMessageToLeader(new HeartbeatAck(followerId), sharedState)
+        );
+    }
 
     /// Updates the last time an `Heartbeat` message has been received from the leader.
     public void updateLastHeartbeatReceived() {
@@ -148,6 +153,7 @@ public class HeartbeatManager {
                 if (missed > MISSABLE_HEARTBEATS) {
                     System.out.println("[INFO]: Removing broker " + bId + "...");
                     removedBrokers.add(bId);
+                    NetworkManager.cleanupConnectionsFor(sharedState.getBrokerAddress(bId));
                     sharedState.removeBrokerAddress(bId);
                     missedHeartbeats.remove(bId);
 

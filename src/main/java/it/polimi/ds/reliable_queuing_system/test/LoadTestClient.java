@@ -3,6 +3,7 @@ package it.polimi.ds.reliable_queuing_system.test;
 import it.polimi.ds.reliable_queuing_system.messages.*;
 import it.polimi.ds.reliable_queuing_system.utils.Address;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -20,20 +21,24 @@ public class LoadTestClient {
     private final AtomicInteger successfulOperations = new AtomicInteger(0);
     private final AtomicInteger failedOperations = new AtomicInteger(0);
     private final AtomicLong totalLatency = new AtomicLong(0);
-    private final ConcurrentHashMap<Integer, Long> pendingOperations = new ConcurrentHashMap<>();
+    //private final ConcurrentHashMap<Integer, Long> pendingOperations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, OperationDetail> pendingOperations = new ConcurrentHashMap<>();
     private final CountDownLatch completionLatch;
     private final ExecutorService executorService;
     private final ConcurrentHashMap<String, AtomicInteger> queueWrites = new ConcurrentHashMap<>();
     private volatile boolean running = true;
+    private final ExecutorService processingPool;
 
     // Connection pool settings
-    static int maxPoolSize = 100;
+    private int maxPoolSize = 10;
+
     private static final int CONNECTION_TIMEOUT = 30000;
-    private static final int SOCKET_TIMEOUT = 5000;
+    private static final int SOCKET_TIMEOUT = 30000;
 
     // Direct config variables
     private final int totalOperations;
     private final int concurrentThreads;
+    private final int concurrentOperations;
     private final long testTimeoutSeconds;
     private final double readWriteRatio;
     private final String[] queueIds;
@@ -55,7 +60,8 @@ public class LoadTestClient {
             int maxValue,
             long operationDelayMs,
             boolean verboseLogging,
-            int maxPoolSize) {
+            int maxPoolSize,
+            int concurrentOperations) {
         this.clientAddress = clientAddress;
         this.brokerAddress = brokerAddress;
         this.clientId = clientId;
@@ -68,13 +74,43 @@ public class LoadTestClient {
         this.maxValue = maxValue;
         this.operationDelayMs = operationDelayMs;
         this.verboseLogging = verboseLogging;
-        LoadTestClient.maxPoolSize = maxPoolSize;
+        this.maxPoolSize = maxPoolSize;
         this.completionLatch = new CountDownLatch(totalOperations);
         this.executorService = Executors.newFixedThreadPool(concurrentThreads);
+        this.concurrentOperations = concurrentOperations;
+        this.processingPool = Executors.newFixedThreadPool(concurrentOperations);
 
         // Pre-populate queue writes tracker with all queue IDs
         for (String queueId : queueIds) {
             queueWrites.put(queueId, new AtomicInteger(0));
+        }
+    }
+
+    private static class OperationDetail {
+        final long startTime;
+        final String type;
+        final String queueName;
+        final Integer value;  // null for reads
+        final int clientId;
+        final Address clientAddress;
+
+        OperationDetail(String type, String queueName, Integer value, int clientId, Address clientAddress) {
+            this.startTime = System.currentTimeMillis();
+            this.type = type;
+            this.queueName = queueName;
+            this.value = value;
+            this.clientId = clientId;
+            this.clientAddress = clientAddress;
+        }
+        @Override
+        public String toString() {
+            if ("write".equals(type)) {
+                return "WriteRequest[queueName=" + queueName + ", value=" + value +
+                        ", clientId=" + clientId + ", operationId=%d, clientAddress=" + clientAddress + "]";
+            } else {
+                return "ReadRequest[queueName=" + queueName +
+                        ", clientId=" + clientId + ", operationId=%d, clientAddress=" + clientAddress + "]";
+            }
         }
     }
 
@@ -178,14 +214,24 @@ public class LoadTestClient {
         running = false;
         long endTime = System.currentTimeMillis();
         executorService.shutdownNow();
+
         try {
-                       if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                                executorService.shutdownNow();
-                           }
-                    } catch (InterruptedException ie) {
+               if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
                         executorService.shutdownNow();
-                        Thread.currentThread().interrupt();
-                    }
+                   }
+                } catch (InterruptedException ie) {
+                    executorService.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
+        processingPool.shutdownNow();
+        try {
+            if (!processingPool.awaitTermination(1, TimeUnit.SECONDS)) {
+                processingPool.shutdownNow();
+            }
+        } catch (InterruptedException ignored) {
+            processingPool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         closeAllConnections();
 
         // Print results
@@ -204,6 +250,14 @@ public class LoadTestClient {
         System.out.println("\nWrite operations per queue:");
         for (Map.Entry<String, AtomicInteger> entry : queueWrites.entrySet()) {
             System.out.println("  Queue " + entry.getKey() + ": " + entry.getValue().get() + " writes");
+        }
+        // Log timed out operations
+        if (!pendingOperations.isEmpty()) {
+            System.out.println("\n===== TIMED OUT OPERATIONS =====");
+            pendingOperations.forEach((opId, detail) -> {
+                System.out.println(String.format(detail.toString(), opId));
+            });
+            System.out.println("Total timed out: " + pendingOperations.size());
         }
     }
 
@@ -241,43 +295,40 @@ public class LoadTestClient {
         }
     }
 
-  private void handleIncomingConnection(Socket socket) {
-      ObjectInputStream in = null;
-      try {
-          in = new ObjectInputStream(socket.getInputStream());
-          // Continuously read messages until shutdown or socket error
-          while (running && !socket.isClosed()) {
-              try {
-                  Message message = (Message) in.readObject();
-                  switch (message) {
-                      case ReadResponse msg -> handleReadResponse(msg);
-                      case ReadConfirmation msg -> handleReadConfirmation(msg);
-                      case WriteResponse msg -> handleWriteResponse(msg);
-                      default -> {
-                          if (verboseLogging) {
-                              System.out.println("Received unexpected message type: " + message.getClass().getSimpleName());
-                          }
-                      }
-                  }
-              } catch (SocketTimeoutException ste) {
-                  // no data within timeout; loop back to check running flag
-              } catch (IOException | ClassNotFoundException e) {
-                  if (running) {
-                      System.err.println("Error handling incoming message on socket: " + e.getMessage());
-                  }
-                  break; // exit loop on fatal read error
-              }
-          }
-      } catch (IOException e) {
-          System.err.println("Error initializing incoming connection: " + e.getMessage());
-      } finally {
-          // Clean up
-          try {
-              if (in != null) in.close();
-              socket.close();
-          } catch (IOException ignored) {}
-      }
-  }
+    private void handleIncomingConnection(Socket socket) {
+        try (ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
+            while (running && !socket.isClosed()) {
+                try {
+                    Message message = (Message) in.readObject();
+                    // hand off processing immediately
+                    processingPool.execute(() -> {
+                        switch (message) {
+                            case ReadResponse msg       -> handleReadResponse(msg);
+                            case ReadConfirmation msg   -> handleReadConfirmation(msg);
+                            case WriteResponse msg      -> handleWriteResponse(msg);
+                            default -> {
+                                if (verboseLogging) {
+                                    System.out.println("Received unexpected type: " + message.getClass().getSimpleName());
+                                }
+                            }
+                        }
+                    });
+                } catch (SocketTimeoutException ste) {
+                    // no data; retry
+                } catch (EOFException | SocketException e) {
+                    break; // connection closed
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        } catch (IOException e) {
+            if (verboseLogging) {
+                System.err.println("Error in incoming connection: " + e.getMessage());
+            }
+        } finally {
+            try { socket.close(); } catch (IOException ignore) {}
+        }
+    }
 
     private void handleReadResponse(ReadResponse msg) {
         // Just logging for debugging if needed
@@ -289,9 +340,9 @@ public class LoadTestClient {
     }
 
     private void handleReadConfirmation(ReadConfirmation msg) {
-        Long startTime = pendingOperations.remove(msg.operationId());
-        if (startTime != null) {
-            long latency = System.currentTimeMillis() - startTime;
+        OperationDetail detail  = pendingOperations.remove(msg.operationId());
+        if (detail != null) {
+            long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
@@ -303,9 +354,9 @@ public class LoadTestClient {
     }
 
     private void handleWriteResponse(WriteResponse msg) {
-        Long startTime = pendingOperations.remove(msg.operationId());
-        if (startTime != null) {
-            long latency = System.currentTimeMillis() - startTime;
+        OperationDetail detail= pendingOperations.remove(msg.operationId());
+        if (detail != null) {
+            long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
@@ -360,7 +411,7 @@ public class LoadTestClient {
             connection.outputStream.reset(); // Reset object cache to prevent memory leaks
             connection.outputStream.flush();
 
-            pendingOperations.put(operationId, System.currentTimeMillis());
+            pendingOperations.put(operationId, new OperationDetail("read", queueId, null, clientId, clientAddress));   ;
 
             if (verboseLogging) {
                 System.out.println("Sent read request for queue " + queueId + " (operation " + operationId + ")");
@@ -381,7 +432,7 @@ public class LoadTestClient {
             connection.outputStream.reset(); // Reset object cache to prevent memory leaks
             connection.outputStream.flush();
 
-            pendingOperations.put(operationId, System.currentTimeMillis());
+            pendingOperations.put(operationId, new OperationDetail("write", queueId, value, clientId, clientAddress));
 
             if (verboseLogging) {
                 System.out.println("Sent write request with value " + value + " to queue " + queueId +
@@ -415,7 +466,7 @@ public class LoadTestClient {
             System.out.print("Enter broker address (ip:port) [default: 127.0.0.1:8080]: ");
             String brokerInput = scanner.nextLine().trim();
             Address brokerAddress = brokerInput.isEmpty() ?
-                    new Address("127.0.0.1", 8080) :
+                    new Address("127.0.0.1", 5001) :
                     parseAddress(brokerInput);
 
             System.out.print("Enter connection pool size per client [default: 10]: ");
@@ -463,14 +514,15 @@ public class LoadTestClient {
                     clientId,
                     totalOperations,
                     concurrentThreads,
-                    200,  // max duration in seconds of the simulation
+                    180,  // max duration in seconds of the simulation
                     readWriteRatio,
                     queueIds,
                     1,    // min value
                     1000, // max value
-                    10,   // operation delay ms
+                    250,   // operation delay ms
                     verboseLogging,
-                    poolSize  // max pool size
+                    poolSize , // max pool size
+                    10 // concurrent operations
             );
 
             loadTestClient.startTest();

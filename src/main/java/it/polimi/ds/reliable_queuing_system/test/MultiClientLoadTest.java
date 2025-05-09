@@ -5,14 +5,17 @@ import it.polimi.ds.reliable_queuing_system.utils.Address;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static it.polimi.ds.reliable_queuing_system.test.LoadTestClient.maxPoolSize;
+
 
 public class MultiClientLoadTest {
     private final Address brokerAddress;
@@ -54,7 +57,6 @@ public class MultiClientLoadTest {
             int clientPort = findAvailablePort();
             Address clientAddress = new Address(clientIp, clientPort);
 
-            // Each client gets a unique ID
             int clientId = ThreadLocalRandom.current().nextInt(10000, 100000);
 
             LoadTestClient client = new LoadTestClient(
@@ -63,71 +65,93 @@ public class MultiClientLoadTest {
                     clientId,
                     operationsPerClient,
                     threadsPerClient,
-                    120, // max duration of the test in seconds
+                    360,       // max duration of the test in seconds
                     readWriteRatio,
                     queueIds,
-                    1, // min value
-                    1000, // max value
-                    200, // operation delay (200 mean 5 ops/sec per client)
+                    1,         // min value
+                    1000,      // max value
+                    250,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
-                    maxPoolSize// connection pool size
-
+                    10, // connection pool size
+                    20
             );
 
             clients.add(client);
-            System.out.println("Created client " + (i+1) + " with ID: " + clientId);
+            System.out.println("Created client " + (i + 1) + " with ID: " + clientId);
         }
 
-        // CountDownLatch to wait for all clients to complete
         CountDownLatch clientsCompletionLatch = new CountDownLatch(clientCount);
+        ExecutorService executor = Executors.newFixedThreadPool(clientCount);
 
-        long startTime = System.currentTimeMillis();
+        final List<Long> clientStartTimes = Collections.synchronizedList(new ArrayList<>());
+        final List<Long> clientEndTimes = Collections.synchronizedList(new ArrayList<>());
+        final AtomicLong totalClientRuntime = new AtomicLong(0);
 
-        // Start all clients
+        long overallStartTime = System.currentTimeMillis();
+        // Start all clients via executor
         for (LoadTestClient client : clients) {
-            new Thread(() -> {
+            executor.submit(() -> {
                 try {
+
+                    long clientStartTime = System.currentTimeMillis();
+                    clientStartTimes.add(clientStartTime);
                     client.startTest();
+
+                    long clientEndTime = System.currentTimeMillis();
+                    clientEndTimes.add(clientEndTime);
+
+                    // Calculate and add this client's runtime
+                    long clientRuntime = clientEndTime - clientStartTime;
+                    totalClientRuntime.addAndGet(clientRuntime);
 
                     // Aggregate the results
                     totalSuccessfulOperations.addAndGet(client.getSuccessfulOperations());
                     totalFailedOperations.addAndGet(client.getFailedOperations());
                     totalLatency.addAndGet(client.getTotalLatency());
-
-
-                    clientsCompletionLatch.countDown();
                 } catch (InterruptedException e) {
                     System.err.println("Client test interrupted: " + e.getMessage());
-                    clientsCompletionLatch.countDown();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
+                } finally {
+                    clientsCompletionLatch.countDown();
                 }
-            }).start();
-
+            });
             try {
-                Thread.sleep(100); // Start  10  clients per second
+                Thread.sleep(500); // Start 2 clients per second
             } catch (InterruptedException e) {
                 System.err.println("Startup sequence interrupted");
             }
+
         }
 
         // Wait for all clients to complete
         clientsCompletionLatch.await();
-        long endTime = System.currentTimeMillis();
+        long overallEndTime = System.currentTimeMillis();
+
+        executor.shutdown();
 
         // Print aggregate results
         int totalOps = clientCount * operationsPerClient;
+        double overallDuration = (overallEndTime - overallStartTime) / 1000.0;
+        double avgClientDuration = clientCount > 0 ? totalClientRuntime.get() / (clientCount * 1000.0) : 0;
         System.out.println("\n===== MULTI-CLIENT LOAD TEST RESULTS =====");
-        System.out.println("Test duration: " + (endTime - startTime) / 1000.0 + " seconds");
+        System.out.println("Test duration: " + overallDuration +  " seconds");
+        System.out.println("Average client runtime: " + avgClientDuration + " seconds");
         System.out.println("Number of clients: " + clientCount);
         System.out.println("Total operations requested: " + totalOps);
         System.out.println("Operations completed: " + totalSuccessfulOperations.get());
         System.out.println("Operations failed: " + totalFailedOperations.get());
-        System.out.println("Operations timed out: " + (totalOps - totalSuccessfulOperations.get() - totalFailedOperations.get()));
-        System.out.println("Throughput: " + (totalSuccessfulOperations.get() * 1000.0 / (endTime - startTime)) + " ops/sec");
+        System.out.println("Operations timed out: " +
+                (totalOps - totalSuccessfulOperations.get() - totalFailedOperations.get()));
+        double effectiveThroughput = totalClientRuntime.get() > 0 ?
+                (totalSuccessfulOperations.get() * 1000.0 / totalClientRuntime.get()) * clientCount : 0;
+        System.out.println("Effective throughput: " + effectiveThroughput + " ops/sec");
+        System.out.println("Overall Throughput: " +
+                (totalSuccessfulOperations.get() * 1000.0 / (overallEndTime - overallStartTime)) + " ops/sec");
 
         if (totalSuccessfulOperations.get() > 0) {
-            System.out.println("Average latency: " + (totalLatency.get() / totalSuccessfulOperations.get()) + " ms");
+            System.out.println("Average latency: " +
+                    (totalLatency.get() / totalSuccessfulOperations.get()) + " ms");
         }
     }
 
@@ -137,11 +161,12 @@ public class MultiClientLoadTest {
 
             Scanner scanner = new Scanner(System.in);
 
-            System.out.print("Enter broker address (ip:port) [default: 127.0.0.1:8080]: ");
+            System.out.print("Enter broker address (ip:port) [default: 127.0.0.1:5001]: ");
             String brokerInput = scanner.nextLine().trim();
             Address brokerAddress = brokerInput.isEmpty() ?
-                    new Address("127.0.0.1", 8080) :
+                    new Address("127.0.0.1", 5001) :
                     parseAddress(brokerInput);
+
             System.out.print("Enter connection pool size per client [default: 10]: ");
             String poolInput = scanner.nextLine().trim();
             int poolSize = poolInput.isEmpty() ? 10 : Integer.parseInt(poolInput);
@@ -150,13 +175,13 @@ public class MultiClientLoadTest {
             String clientsInput = scanner.nextLine().trim();
             int clientCount = clientsInput.isEmpty() ? 5 : Integer.parseInt(clientsInput);
 
-            System.out.print("Enter operations per client [default: 200]: ");
+            System.out.print("Enter operations per client [default: 100]: ");
             String opsInput = scanner.nextLine().trim();
-            int operationsPerClient = opsInput.isEmpty() ? 200 : Integer.parseInt(opsInput);
+            int operationsPerClient = opsInput.isEmpty() ? 100 : Integer.parseInt(opsInput);
 
-            System.out.print("Enter threads per client [default: 2]: ");
+            System.out.print("Enter threads per client [default: 1]: ");
             String threadsInput = scanner.nextLine().trim();
-            int threadsPerClient = threadsInput.isEmpty() ? 2 : Integer.parseInt(threadsInput);
+            int threadsPerClient = threadsInput.isEmpty() ? 1 : Integer.parseInt(threadsInput);
 
             System.out.print("Enter read/write ratio (0-1, 0=all writes, 1=all reads) [default: 0.3]: ");
             String ratioInput = scanner.nextLine().trim();
@@ -183,7 +208,6 @@ public class MultiClientLoadTest {
             );
 
             multiTest.runTest();
-
         } catch (Exception e) {
             System.err.println("Error in multi-client load test: " + e.getMessage());
             e.printStackTrace();

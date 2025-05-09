@@ -17,13 +17,14 @@ import java.util.concurrent.*;
  * we only ever write one stream header per connection.
  */
 public class NetworkManager {
-    public static final int socketTimeout = 3000;
+    public static final int socketTimeout = 5000;
     private static final int PER_PEER_POOL_SIZE = 5000;
 
     // pool of live connections (socket + cached ObjectOutputStream)
     private static final ConcurrentMap<Address, BlockingQueue<PooledConn>> pools = new ConcurrentHashMap<>();
 
     public static final ElectionInfo electionInfo = Broker.electionInfo;
+
 
     private static class PooledConn {
         final Socket socket;
@@ -32,17 +33,21 @@ public class NetworkManager {
     }
 
     private static PooledConn borrowConn(Address peer) throws IOException {
+        // Get or create a connection queue for this peer
         BlockingQueue<PooledConn> q = pools.computeIfAbsent(peer,
                 __ -> new LinkedBlockingQueue<>(PER_PEER_POOL_SIZE));
+
+        // Try to get an existing connection from the pool
         PooledConn pc = q.poll();
         if (pc != null && pc.socket.isConnected() && !pc.socket.isClosed()) {
             return pc;
         }
-        // create new socket+OOS header
+        // Otherwise create a new connection
         Socket sock = new Socket();
         SocketAddress sa = new InetSocketAddress(peer.ip(), peer.port());
         sock.connect(sa, socketTimeout);
         ObjectOutputStream oos = new ObjectOutputStream(sock.getOutputStream());
+        oos.flush();
         return new PooledConn(sock, oos);
     }
 
@@ -63,26 +68,72 @@ public class NetworkManager {
             pc.out.writeObject(msg);
             pc.out.reset();    // clear handle cache so next object is not deduped
             pc.out.flush();
-            System.out.println("[INFO]: Sent " + msg + " → " + peer);
+            System.out.println("[INFO]: Sent message " + msg + " to " + peer + "...");
             returnConn(peer, pc);
         } catch (IOException e) {
             // on fail drop this conn
             if (pc != null) try { pc.socket.close(); } catch (IOException ignored) {}
-            System.out.println("[WARN]: sendMessage failed to " + peer + ": " + e.getMessage());
+            System.out.println("Failed to send message to " + peer + ":  it has probably crashed.");
         }
     }
 
     public static void forwardMessageToLeader(Message msg, SharedState state) {
-        if (electionInfo.isElectionInProgress()) return;
-        Address leader = state.getBrokerAddress(state.getLeaderId());
-        sendMessage(msg, leader);
+        if (electionInfo.isElectionInProgress()) {
+            System.out.println("[INFO]: Election in progress, message forwarding to leader skipped");
+            return;
+        }
+        int leaderId = state.getLeaderId();
+        Address leader = state.getBrokerAddress(leaderId);
+
+        PooledConn pc = null;
+        try {
+            pc = borrowConn(leader);
+            // reuse the same ObjectOutputStream
+            pc.out.writeObject(msg);
+            pc.out.reset();    // clear handle cache so next object is not deduped
+            pc.out.flush();
+            System.out.println("[INFO]: Message " + msg + " forwarded to leader " + leaderId);
+            returnConn(leader, pc);
+        } catch (IOException e) {
+
+            // on fail drop this conn
+           System.out.println("[WARN]: Unable to forward the message " + msg + " to the leader " + leaderId + ". It has probably crashed.");
+
+            throw new RuntimeException(e);
+        }
     }
 
     public static void broadcastMessage(Message msg, int myId, SharedState state) {
-        Set<Map.Entry<Integer,Address>> peers = state.getBrokerAddresses().entrySet();
-        for (var e : peers) {
-            if (e.getKey() == myId) continue;
-            sendMessage(msg, e.getValue());
+        Map<Integer, Address> brokerAddresses = state.getBrokerAddresses();
+        Set<Integer> brokerIds = brokerAddresses.keySet();
+
+        System.out.println("[INFO]: Trying to broadcast message " + msg + " to brokers " + brokerIds + "...");
+
+        for (Integer id : brokerIds) {
+            if (id != myId) {
+                Address addr = brokerAddresses.get(id);
+                if (addr != null) {  // Safety check to ensure we have the address
+                    //sendMessage(msg, addr);
+                    PooledConn pc = null;
+                    try {
+                        pc = borrowConn(addr);
+                        // reuse the same ObjectOutputStream
+                        pc.out.writeObject(msg);
+                        pc.out.reset();    // clear handle cache so next object is not deduped
+                        pc.out.flush();
+                        returnConn(addr, pc);
+                    } catch (IOException e) {
+                        System.out.println("[ERROR]: Unable to broadcast the message to node " + id + ". It has probably crashed");
+
+                        // If we're in an election and encounter a failure, remove the broker
+//                        if (electionInfo.isElectionInProgress()) {
+//                            state.removeBrokerAddress(id);
+//                            System.out.println("[INFO]: REMOVED crashed broker " + id + " from broker list");
+//                        }
+                    }
+
+                }
+            }
         }
     }
 
@@ -95,6 +146,19 @@ public class NetworkManager {
             }
         });
         pools.clear();
+    }
+    public static void cleanupConnectionsFor(Address peer) {
+        BlockingQueue<PooledConn> q = pools.get(peer);
+        if (q != null) {
+            // Close all existing connections for this peer
+            PooledConn pc;
+            while ((pc = q.poll()) != null) {
+                try { pc.socket.close(); } catch (IOException ignored) {}
+            }
+            // Remove the entire queue for this peer
+            pools.remove(peer);
+            System.out.println("[INFO]: Cleaned up connection pool for " + peer);
+        }
     }
 
 }

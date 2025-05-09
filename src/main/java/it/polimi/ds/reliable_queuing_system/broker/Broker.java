@@ -113,6 +113,8 @@ public class Broker {
                     messageDispatcher.dispatch(msg);
                 }
             }
+        } catch (EOFException | SocketException e) {
+            // reset during leader crash: ignore silently
         } catch (ClassNotFoundException | IOException e) {
             System.out.println("[INFO]: Connection handler error: " + e.getMessage());
         }

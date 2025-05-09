@@ -134,15 +134,56 @@ public class MessageDispatcher {
             }
         }
         else {
+            // Always add to delayedMessages
+            delayedMessages.add(msg);
+
             try {
-                // forward the message to the current leader
+                // Forward to leader but don't remove from delayedMessages yet
                 NetworkManager.forwardMessageToLeader(msg, sharedState);
             } catch (RuntimeException e) {
-                // if leader is not reachable, store the message so that it will be handled after the election
                 System.out.println("[INFO]: Delaying the message to be handled after the election.");
-                delayedMessages.add(msg);
             }
         }
+    }
+    /**
+     * Process delayed messages after becoming leader, avoiding duplicates
+     */
+    private void processDelayedMessages() {
+        Set<String> processedMsgSignatures = new HashSet<>();
+        Queue<Message> remainingMessages = new ConcurrentLinkedQueue<>();
+
+        // First pass: identify unique message signatures
+        while (!delayedMessages.isEmpty()) {
+            Message msg = delayedMessages.poll();
+            String msgSignature = getMessageSignature(msg);
+
+            // Only process messages we haven't seen before
+            if (!processedMsgSignatures.contains(msgSignature)) {
+                try {
+                    // Process the message as leader
+                    processedMsgSignatures.add(msgSignature);
+                    dispatch(msg);
+                } catch (ClassNotFoundException e) {
+                    System.out.println("[ERROR]: Unknown message type in delayed messages queue");
+                }
+            } else {
+                // It's a duplicate, don't process again
+                System.out.println("[INFO]: Skipping duplicate delayed message: " + msg);
+            }
+        }
+    }
+
+    // Helper to create a unique signature for messages
+    private String getMessageSignature(Message msg) {
+        if (msg instanceof WriteRequest write) {
+            return "W-" + write.clientId() + "-" + write.operationId();
+        } else if (msg instanceof ReadRequest read) {
+            return "R-" + read.clientId() + "-" + read.operationId();
+        } else if (msg instanceof ClientOffsetsUpdateRequest update) {
+            return "O-" + update.clientId() + "-" + update.operationId();
+        }
+        // Default to string representation for other message types
+        return msg.toString();
     }
 
     /// Handler for received [ReadRequest] messages.
@@ -189,13 +230,10 @@ public class MessageDispatcher {
 
             // Update timestamp in shared state
             heartbeatManager.updateLastHeartbeatReceived();
+            // Offload ack so it isn’t blocked by other message handling
+            heartbeatManager.sendAck(brokerId);
 
-            // Send HeartbeatAck to the leader
-            try {
-                NetworkManager.forwardMessageToLeader(new HeartbeatAck(brokerId), sharedState);
-            } catch (RuntimeException ignored) {
-                // doing nothing as the Heartbeat monitor thread will detect the crash and act accordingly
-            }
+
         }
     }
 
@@ -205,7 +243,6 @@ public class MessageDispatcher {
             Integer followerId = msg.brokerId();
             heartbeatManager.updateLastHeartbeatAckReceived(followerId);
             System.out.println("[INFO]: Received heartbeat acknowledgment from broker " + followerId);
-
         }
     }
 
@@ -301,17 +338,7 @@ public class MessageDispatcher {
 
                 // restart the heartbeat manager
                 heartbeatManager.restart();
-
-                // dispatch the received messages that had been delayed during the election
-                while(!delayedMessages.isEmpty()) {
-                    try {
-                        Message delayedMsg = delayedMessages.poll();
-                        System.out.println("[INFO]: Dispatching message " + delayedMsg + " delayed during election");
-                        dispatch(delayedMsg);
-                    } catch (ClassNotFoundException ignored) {
-                        System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
-                    }
-                }
+                processDelayedMessages();
             }
         }
     }
@@ -333,17 +360,7 @@ public class MessageDispatcher {
 
             // restart the heartbeat manager
             heartbeatManager.restart();
-
-            // dispatch the received messages that had been delayed during the election
-            while(!delayedMessages.isEmpty()) {
-                try {
-                    Message delayedMsg = delayedMessages.poll();
-                    System.out.println("[INFO]: Dispatching message " + delayedMsg + " delayed during election");
-                    dispatch(delayedMsg);
-                } catch (ClassNotFoundException ignored) {
-                    System.out.println("[INFO]: Unknown message was received during election, it will be ignored.");
-                }
-            }
+            processDelayedMessages();
         }
-    }
+        }
 }
