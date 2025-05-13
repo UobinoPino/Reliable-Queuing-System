@@ -362,5 +362,5 @@ public class MessageDispatcher {
             heartbeatManager.restart();
             processDelayedMessages();
         }
-        }
+    }
 }

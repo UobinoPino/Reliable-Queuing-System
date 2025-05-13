@@ -11,7 +11,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.Lock;
 
 public class Client {
@@ -29,6 +29,29 @@ public class Client {
     private static ClientState clientState = ClientState.READY;
 
     private static final CountDownLatch isIncomingMessagesListenerReady = new CountDownLatch(1);
+
+    private static final ScheduledExecutorService waitingTimeoutExecutor = Executors.newScheduledThreadPool(1);
+    private static ScheduledFuture<?> waitingTimeoutFuture;
+
+    private static void startWaitingTimeout() {
+        waitingTimeoutFuture = waitingTimeoutExecutor.schedule(Client::waitingTimeoutExpired, 1, TimeUnit.MINUTES);  //TODO: replace with constant timeout value
+    }
+
+    private static void cancelWaitingTimeout() {
+        if (waitingTimeoutFuture != null && !waitingTimeoutFuture.isDone()) {
+            waitingTimeoutFuture.cancel(true);
+        }
+    }
+
+    private static void waitingTimeoutExpired() {
+        synchronized (clientStateLock) {
+            if (clientState != ClientState.READY) {
+                System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
+                clientState = ClientState.READY;
+                obtainKnownBrokerAddress();
+            }
+        }
+    }
 
     public static void main(String[] args) throws InterruptedException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: CLIENT ========");
@@ -170,6 +193,9 @@ public class Client {
 
                 clientId = msg.clientId();
                 clientState = ClientState.READY;
+                cancelWaitingTimeout();
+
+                //TODO: send ACK to connected broker
             } else {
                 System.out.println("[INFO]: Unexpected ClientIdAssignment message received.");
             }
@@ -182,6 +208,10 @@ public class Client {
                 System.out.println("[INFO]: Read response received. Waiting for confirmation message.");
 
                 pendingReadValues = msg.values();
+                cancelWaitingTimeout();
+                startWaitingTimeout();
+
+                //TODO: send ACK to connected broker?
             } else {
                 System.out.println("[INFO]: Unexpected ReadResponse message received.");
             }
@@ -198,6 +228,9 @@ public class Client {
                 }
                 pendingReadValues = null;
                 clientState = ClientState.READY;
+                cancelWaitingTimeout();
+
+                //TODO: send ACK to connected broker
             } else {
                 System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
             }
@@ -210,6 +243,9 @@ public class Client {
                 System.out.println("New value appended to the queue successfully.");
 
                 clientState = ClientState.READY;
+                cancelWaitingTimeout();
+
+                //TODO: send ACK to connected broker
             } else {
                 System.out.println("[INFO]: Unexpected WriteResponse message received.");
             }
@@ -222,7 +258,6 @@ public class Client {
     //region USER ACTIONS FUNCTIONS
 
     private static void requestClientId() {
-
         boolean requestSent = false;
         while (!requestSent) {
             synchronized (clientStateLock) {
@@ -234,6 +269,7 @@ public class Client {
                     toBroker.flush();
 
                     clientState = ClientState.WAITING_ID;
+                    startWaitingTimeout();
                     requestSent = true;
 
                     System.out.println("[INFO]: Sent client ID request. If this is a reconnection, you'll receive your previous ID.");
@@ -259,6 +295,7 @@ public class Client {
                 out.flush();
 
                 clientState = ClientState.WAITING_READ;
+                startWaitingTimeout();
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
                 brokerAddress = obtainKnownBrokerAddress();
@@ -291,6 +328,7 @@ public class Client {
                 out.flush();
 
                 clientState = ClientState.WAITING_WRITE;
+                startWaitingTimeout();
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
                 brokerAddress = obtainKnownBrokerAddress();

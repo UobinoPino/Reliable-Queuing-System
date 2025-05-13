@@ -115,6 +115,10 @@ public class HeartbeatManager {
                     // remove the leader from the list of known brokers
                     sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
+                    //TODO: add to log the log entries waiting for commit (if any)
+
+                    //TODO: send confirmation to client for each waiting log entry manually added
+
                     // start leader election by proposing self as candidate
                     int myLogLength = sharedState.getLogLength();
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
