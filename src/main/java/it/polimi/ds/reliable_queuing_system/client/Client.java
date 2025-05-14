@@ -21,6 +21,9 @@ public class Client {
 
     private static Address brokerAddress;
 
+    private static Socket currentSocket;
+    private static ObjectOutputStream currentOutStream;
+
     private static Integer clientId;
     private static Integer nextOperationId = 0;
 
@@ -61,8 +64,8 @@ public class Client {
         int clientPort = obtainClientPort();
         clientAddress = new Address(clientIp, clientPort);
 
-        // obtain known broker addr
-        brokerAddress = obtainKnownBrokerAddress();
+//        // obtain known broker addr
+//        brokerAddress = obtainKnownBrokerAddress();
 
         // start thread to wait for incoming messages
         Thread messagesIngressThread = new Thread(Client::incomingMessagesListener);
@@ -166,6 +169,8 @@ public class Client {
                 Socket socket = serverSocket.accept();
                 ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
 
+                //TODO: maybe missing a while !socket.isClosed()?
+
                 try {
                     Message message = (Message) in.readObject();
 
@@ -195,7 +200,13 @@ public class Client {
                 clientState = ClientState.READY;
                 cancelWaitingTimeout();
 
-                //TODO: send ACK to connected broker
+                try {
+                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
+                    currentOutStream.flush();
+                } catch (IOException | NullPointerException e) {
+                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
+                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                }
             } else {
                 System.out.println("[INFO]: Unexpected ClientIdAssignment message received.");
             }
@@ -230,7 +241,13 @@ public class Client {
                 clientState = ClientState.READY;
                 cancelWaitingTimeout();
 
-                //TODO: send ACK to connected broker
+                try {
+                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
+                    currentOutStream.flush();
+                } catch (IOException | NullPointerException e) {
+                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
+                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                }
             } else {
                 System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
             }
@@ -245,7 +262,13 @@ public class Client {
                 clientState = ClientState.READY;
                 cancelWaitingTimeout();
 
-                //TODO: send ACK to connected broker
+                try {
+                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
+                    currentOutStream.flush();
+                } catch (IOException | NullPointerException e) {
+                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
+                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                }
             } else {
                 System.out.println("[INFO]: Unexpected WriteResponse message received.");
             }
@@ -257,17 +280,31 @@ public class Client {
 
     //region USER ACTIONS FUNCTIONS
 
+    private static void obtainOutSocket() {
+        brokerAddress = obtainKnownBrokerAddress();
+
+        try {
+            currentSocket = new Socket();
+            SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
+            currentSocket.connect(socketAddress, NetworkManager.socketTimeout);
+            currentOutStream = new ObjectOutputStream(currentSocket.getOutputStream());
+        } catch (IOException e) {
+            System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
+            obtainOutSocket();
+        }
+    }
+
     private static void requestClientId() {
         boolean requestSent = false;
         while (!requestSent) {
             synchronized (clientStateLock) {
-                try (Socket socket = new Socket()) {
-                    SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
-                    socket.connect(socketAddress, NetworkManager.socketTimeout);
-                    ObjectOutputStream toBroker = new ObjectOutputStream(socket.getOutputStream());
-                    toBroker.writeObject(new ClientIdRequest(clientAddress));
-                    toBroker.flush();
+                if (currentOutStream == null) {
+                    obtainOutSocket();
+                }
 
+                try {
+                    currentOutStream.writeObject(new ClientIdRequest(clientAddress));
+                    currentOutStream.flush();
                     clientState = ClientState.WAITING_ID;
                     startWaitingTimeout();
                     requestSent = true;
@@ -275,7 +312,7 @@ public class Client {
                     System.out.println("[INFO]: Sent client ID request. If this is a reconnection, you'll receive your previous ID.");
                 } catch (IOException e) {
                     System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
-                    brokerAddress = obtainKnownBrokerAddress();
+                    obtainOutSocket();
                 }
             }
         }
@@ -287,18 +324,19 @@ public class Client {
         String queueId = scanner.nextLine();
 
         synchronized (clientStateLock) {
-            try (Socket socket = new Socket()) {
-                SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
-                socket.connect(socketAddress, NetworkManager.socketTimeout);
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
-                out.flush();
+            if (currentOutStream == null) {
+                obtainOutSocket();
+            }
+
+            try {
+                currentOutStream.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
+                currentOutStream.flush();
 
                 clientState = ClientState.WAITING_READ;
                 startWaitingTimeout();
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
-                brokerAddress = obtainKnownBrokerAddress();
+                obtainOutSocket();
             }
         }
     }
@@ -322,16 +360,19 @@ public class Client {
         }
 
         synchronized (clientStateLock) {
-            try(Socket socket = new Socket(brokerAddress.ip(), brokerAddress.port())) {
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
-                out.flush();
+            if (currentOutStream == null) {
+                obtainOutSocket();
+            }
+
+            try {
+                currentOutStream.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
+                currentOutStream.flush();
 
                 clientState = ClientState.WAITING_WRITE;
                 startWaitingTimeout();
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
-                brokerAddress = obtainKnownBrokerAddress();
+                obtainOutSocket();
             }
         }
     }

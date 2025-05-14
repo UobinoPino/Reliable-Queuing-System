@@ -5,6 +5,7 @@ import it.polimi.ds.reliable_queuing_system.utils.Address;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /// A class that will take care of handling messages received by the broker.
@@ -15,6 +16,8 @@ public class MessageDispatcher {
         this.heartbeatManager = heartbeatManager;
         this.logManager = logManager;
         this.electionInfo = electionInfo;
+        this.pendingRequestIds = new ConcurrentLinkedQueue<>();
+        this.pendingRequests = new ConcurrentHashMap<>();
         this.delayedMessages = new ConcurrentLinkedQueue<>();
     }
 
@@ -24,6 +27,9 @@ public class MessageDispatcher {
     private final LogManager logManager;
 
     private final ElectionInfo electionInfo;
+
+    private final Queue<String> pendingRequestIds;
+    private final Map<String, Message> pendingRequests;
     private final Queue<Message> delayedMessages;
 
     /// Dispatch the given [Message] to its dedicated handler method.
@@ -51,6 +57,7 @@ public class MessageDispatcher {
             case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
             case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
             case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
+            case RequestCompletedAck msg -> handleRequestCompletedAck(msg);
             default -> throw new ClassNotFoundException();
         }
     }
@@ -134,44 +141,59 @@ public class MessageDispatcher {
             }
         }
         else {
-            // Always add to delayedMessages
-            delayedMessages.add(msg);
+            String id = null;
+            if (!(msg instanceof BrokerJoinRequest)) {
+                switch (msg) {
+                    case ClientIdRequest req -> { id = req.clientAddress() + ":" + "-1"; }
+                    case ClientOffsetsUpdateRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
+                    case WriteRequest req -> { id = req.clientId() + ":" + req.operationId(); }
+                    default -> { throw new RuntimeException("Unexpected message type treated as Generic Request"); }
+                }
+                pendingRequestIds.add(id);
+                pendingRequests.put(id, msg);
+            }
 
             try {
-                // Forward to leader but don't remove from delayedMessages yet
+                // Forward to leader
                 NetworkManager.forwardMessageToLeader(msg, sharedState);
             } catch (RuntimeException e) {
                 System.out.println("[INFO]: Delaying the message to be handled after the election.");
-            }
-        }
-    }
-    /**
-     * Process delayed messages after becoming leader, avoiding duplicates
-     */
-    private void processDelayedMessages() {
-        Set<String> processedMsgSignatures = new HashSet<>();
-        Queue<Message> remainingMessages = new ConcurrentLinkedQueue<>();
-
-        // First pass: identify unique message signatures
-        while (!delayedMessages.isEmpty()) {
-            Message msg = delayedMessages.poll();
-            String msgSignature = getMessageSignature(msg);
-
-            // Only process messages we haven't seen before
-            if (!processedMsgSignatures.contains(msgSignature)) {
-                try {
-                    // Process the message as leader
-                    processedMsgSignatures.add(msgSignature);
-                    dispatch(msg);
-                } catch (ClassNotFoundException e) {
-                    System.out.println("[ERROR]: Unknown message type in delayed messages queue");
+                if (id != null) {
+                    pendingRequestIds.remove(id);
+                    pendingRequests.remove(id);
                 }
-            } else {
-                // It's a duplicate, don't process again
-                System.out.println("[INFO]: Skipping duplicate delayed message: " + msg);
+                delayedMessages.add(msg);  //TODO: is it right that delayed messages should be something separate?
             }
         }
     }
+
+//    /**
+//     * Process delayed messages after becoming leader, avoiding duplicates
+//     */
+//    private void processDelayedMessages() {
+//        Set<String> processedMsgSignatures = new HashSet<>();
+//        Queue<Message> remainingMessages = new ConcurrentLinkedQueue<>();
+//
+//        // First pass: identify unique message signatures
+//        while (!delayedMessages.isEmpty()) {
+//            Message msg = delayedMessages.poll();
+//            String msgSignature = getMessageSignature(msg);
+//
+//            // Only process messages we haven't seen before
+//            if (!processedMsgSignatures.contains(msgSignature)) {
+//                try {
+//                    // Process the message as leader
+//                    processedMsgSignatures.add(msgSignature);
+//                    dispatch(msg);
+//                } catch (ClassNotFoundException e) {
+//                    System.out.println("[ERROR]: Unknown message type in delayed messages queue");
+//                }
+//            } else {
+//                // It's a duplicate, don't process again
+//                System.out.println("[INFO]: Skipping duplicate delayed message: " + msg);
+//            }
+//        }
+//    }
 
     // Helper to create a unique signature for messages
     private String getMessageSignature(Message msg) {
@@ -338,6 +360,7 @@ public class MessageDispatcher {
 
                 // restart the heartbeat manager
                 heartbeatManager.restart();
+                resendPendingRequests();
                 processDelayedMessages();
             }
         }
@@ -360,7 +383,38 @@ public class MessageDispatcher {
 
             // restart the heartbeat manager
             heartbeatManager.restart();
+            resendPendingRequests();
             processDelayedMessages();
+        }
+    }
+
+    private void handleRequestCompletedAck(RequestCompletedAck msg) {
+        String id = msg.clientAddress() + ":" + msg.operationId();
+        pendingRequestIds.remove(id);
+        pendingRequests.remove(id);
+        System.out.println("[INFO]: Completed request " + id + " has been removed from pending requests");
+    }
+
+    private void resendPendingRequests() {
+        while (!pendingRequestIds.isEmpty()) {
+            String id = pendingRequestIds.poll();
+            Message msg = pendingRequests.get(id);
+            try {
+                dispatch(msg);
+            } catch (ClassNotFoundException e) {
+                System.out.println("[ERROR]: Unknown message type in pending requests queue");
+            }
+        }
+    }
+
+    private void processDelayedMessages() {
+        while (!delayedMessages.isEmpty()) {
+            Message msg = delayedMessages.poll();
+            try {
+                dispatch(msg);
+            } catch (ClassNotFoundException e) {
+                System.out.println("[ERROR]: Unknown message type in delayed messages queue");
+            }
         }
     }
 }
