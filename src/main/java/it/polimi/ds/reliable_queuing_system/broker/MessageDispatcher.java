@@ -146,11 +146,13 @@ public class MessageDispatcher {
                 switch (msg) {
                     case ClientIdRequest req -> { id = req.clientAddress() + ":" + "-1"; }
                     case ClientOffsetsUpdateRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
-                    case WriteRequest req -> { id = req.clientId() + ":" + req.operationId(); }
+                    case WriteRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
                     default -> { throw new RuntimeException("Unexpected message type treated as Generic Request"); }
                 }
-                pendingRequestIds.add(id);
-                pendingRequests.put(id, msg);
+                if (pendingRequests.putIfAbsent(id, msg) == null) {
+                    pendingRequestIds.add(id);
+                }
+
             }
 
             try {
@@ -396,25 +398,34 @@ public class MessageDispatcher {
     }
 
     private void resendPendingRequests() {
+   //     System.out.println("[DEBUG]: Starting resendPendingRequests, pendingRequestIds=" + pendingRequestIds);
         while (!pendingRequestIds.isEmpty()) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
+
+   //         System.out.println("[DEBUG]: Resending pending request id=" + id + ", msg=" + msg);
             try {
                 dispatch(msg);
+        //        System.out.println("[DEBUG]: Dispatched pending request id=" + id);
             } catch (ClassNotFoundException e) {
-                System.out.println("[ERROR]: Unknown message type in pending requests queue");
+                System.out.println("[ERROR]: dispatch failed for pending id=" + id + ": " + e.getMessage());
             }
         }
+   //     System.out.println("[DEBUG]: Completed resendPendingRequests, pendingRequestIds now=" + pendingRequestIds);
     }
 
     private void processDelayedMessages() {
+     //   System.out.println("[DEBUG]: Starting processDelayedMessages, delayedMessages.size=" + delayedMessages.size());
         while (!delayedMessages.isEmpty()) {
             Message msg = delayedMessages.poll();
+     //       System.out.println("[DEBUG]: Processing delayed message msg=" + msg);
             try {
                 dispatch(msg);
+      //          System.out.println("[DEBUG]: Dispatched delayed message msg=" + msg);
             } catch (ClassNotFoundException e) {
-                System.out.println("[ERROR]: Unknown message type in delayed messages queue");
+                System.out.println("[ERROR]: dispatch failed for delayed msg=" + msg + ": " + e.getMessage());
             }
         }
+    //    System.out.println("[DEBUG]: Completed processDelayedMessages, delayedMessages.size=" + delayedMessages.size());
     }
 }

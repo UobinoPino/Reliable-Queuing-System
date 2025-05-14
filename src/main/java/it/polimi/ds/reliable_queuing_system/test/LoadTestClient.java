@@ -16,7 +16,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class LoadTestClient {
     private final Address clientAddress;
     private final Address brokerAddress;
-    private final Integer clientId;
+    private Integer clientId;
+    private final CountDownLatch clientIdLatch = new CountDownLatch(1);
     private final AtomicInteger nextOperationId = new AtomicInteger(0);
     private final AtomicInteger successfulOperations = new AtomicInteger(0);
     private final AtomicInteger failedOperations = new AtomicInteger(0);
@@ -149,8 +150,20 @@ public class LoadTestClient {
             conn.close();
         }
     }
+    private void requestClientId() throws IOException, InterruptedException {
+        PooledConnection conn = getConnection();
+        try {
+            conn.outputStream.writeObject(new ClientIdRequest(clientAddress));
+            conn.outputStream.flush();
+        } finally {
+            returnConnection(conn);
+        }
+        if (!clientIdLatch.await(CONNECTION_TIMEOUT, TimeUnit.MILLISECONDS)) {
+            throw new RuntimeException("Timed out waiting for client ID");
+        }
+    }
 
-    public void startTest() throws InterruptedException {
+    public void startTest() throws InterruptedException, IOException {
         System.out.println("Starting load test with configuration: " + getConfigString());
 
         // Start message listener
@@ -162,6 +175,8 @@ public class LoadTestClient {
         Thread.sleep(500);
 
         long startTime = System.currentTimeMillis();
+
+        requestClientId();
 
         // Submit operations to the thread pool
         for (int i = 0; i < totalOperations; i++) {
@@ -294,6 +309,12 @@ public class LoadTestClient {
             System.err.println("Fatal error in message listener: " + e.getMessage());
         }
     }
+    private void handleClientIdAssignment(ClientIdAssignment msg) {
+        this.clientId = msg.clientId();
+        clientIdLatch.countDown();
+        System.out.println("Assigned client ID: " + clientId);
+        sendAck(-1);
+    }
 
     private void handleIncomingConnection(Socket socket) {
         try (ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
@@ -303,6 +324,7 @@ public class LoadTestClient {
                     // hand off processing immediately
                     processingPool.execute(() -> {
                         switch (message) {
+                            case ClientIdAssignment msg -> handleClientIdAssignment(msg);
                             case ReadResponse msg       -> handleReadResponse(msg);
                             case ReadConfirmation msg   -> handleReadConfirmation(msg);
                             case WriteResponse msg      -> handleWriteResponse(msg);
@@ -330,8 +352,18 @@ public class LoadTestClient {
         }
     }
 
+    private void sendAck(int operationId) {
+        try {
+            PooledConnection conn = getConnection();
+            conn.outputStream.writeObject(new RequestCompletedAck(clientAddress, operationId));
+            conn.outputStream.flush();
+            returnConnection(conn);
+        } catch (IOException ignored) {}
+    }
+
     private void handleReadResponse(ReadResponse msg) {
         // Just logging for debugging if needed
+
         if (verboseLogging) {
             List<Integer> values = msg.values();
             System.out.println("Read response received for operation " + msg.operationId() +
@@ -346,6 +378,9 @@ public class LoadTestClient {
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
+            System.out.println("Read confirmation received for operation " + msg.operationId() + " for client " + clientId);
+            sendAck(msg.operationId());
+
 
             if (verboseLogging) {
                 System.out.println("Read confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
@@ -360,6 +395,8 @@ public class LoadTestClient {
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
+            System.out.println("Write response received for operation " + msg.operationId()+ " for client " + clientId);
+            sendAck(msg.operationId());
 
             if (verboseLogging) {
                 System.out.println("Write confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
@@ -428,7 +465,7 @@ public class LoadTestClient {
             int operationId = nextOperationId.getAndIncrement();
 
             // Send request using cached output stream
-            connection.outputStream.writeObject(new WriteRequest(queueId, value, clientId, operationId , clientAddress));
+            connection.outputStream.writeObject(new WriteRequest(queueId, value, clientId, operationId, clientAddress));
             connection.outputStream.reset(); // Reset object cache to prevent memory leaks
             connection.outputStream.flush();
 
