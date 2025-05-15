@@ -20,6 +20,9 @@ public class MessageDispatcher {
         this.pendingRequestIds = new ConcurrentLinkedQueue<>();
         this.pendingRequests = new ConcurrentHashMap<>();
         this.delayedMessages = new ConcurrentLinkedQueue<>();
+
+        electionInfo.addPostElectionCallback(this::resendPendingRequests);
+        electionInfo.addPostElectionCallback(this::processDelayedMessages);
     }
 
     private final int brokerId;
@@ -146,10 +149,10 @@ public class MessageDispatcher {
             String id = null;
             if (!(msg instanceof BrokerJoinRequest)) {
                 switch (msg) {
-                    case ClientIdRequest req -> { id = req.clientAddress() + ":" + "-1"; }
-                    case ClientOffsetsUpdateRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
-                    case WriteRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
-                    default -> { throw new RuntimeException("Unexpected message type treated as Generic Request"); }
+                    case ClientIdRequest req -> id = req.clientAddress() + ":" + "-1";
+                    case ClientOffsetsUpdateRequest req -> id = req.clientAddress() + ":" + req.operationId();
+                    case WriteRequest req -> id = req.clientAddress() + ":" + req.operationId();
+                    default -> throw new RuntimeException("Unexpected message type treated as Generic Request");
                 }
                 if (pendingRequests.putIfAbsent(id, msg) == null) {
                     pendingRequestIds.add(id);
@@ -166,7 +169,7 @@ public class MessageDispatcher {
                     pendingRequestIds.remove(id);
                     pendingRequests.remove(id);
                 }
-                delayedMessages.add(msg);  //TODO: is it right that delayed messages should be something separate?
+                delayedMessages.add(msg);
             }
         }
     }
@@ -325,8 +328,7 @@ public class MessageDispatcher {
 
                 // restart the heartbeat manager
                 heartbeatManager.restart();
-                resendPendingRequests();
-                processDelayedMessages();
+                electionInfo.executePostElectionCallbacks();
             }
         }
     }
@@ -348,8 +350,7 @@ public class MessageDispatcher {
 
             // restart the heartbeat manager
             heartbeatManager.restart();
-            resendPendingRequests();
-            processDelayedMessages();
+            electionInfo.executePostElectionCallbacks();
         }
     }
 

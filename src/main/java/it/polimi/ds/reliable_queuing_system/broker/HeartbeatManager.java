@@ -1,7 +1,6 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
-import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -127,13 +126,31 @@ public class HeartbeatManager {
 
                     //TODO: send confirmation to client for each waiting log entry manually added
 
-                    // start leader election by proposing self as candidate
-                    int myLogLength = sharedState.getLogLength();
-                    electionInfo.updateBestCandidate(brokerId, myLogLength);
-                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                    // if there are other brokers to talk with...
+                    if (sharedState.getBrokersCount() > 1) {
+                        // start leader election by proposing self as candidate
+                        int myLogLength = sharedState.getLogLength();
+                        electionInfo.updateBestCandidate(brokerId, myLogLength);
+                        networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
-                    // stop heartbeat monitor task
-                    this.stop();
+                        // stop heartbeat monitor task
+                        this.stop();
+                    }
+                    // else (single-broker system)...
+                    else {
+                        System.out.println("[INFO]: No other broker remained. Becoming new leader.");
+
+                        // become leader
+                        sharedState.setNewLeaderId(brokerId);
+
+                        // terminate the election phase
+                        electionInfo.stopElection();
+
+                        electionInfo.executePostElectionCallbacks();
+
+                        // restart the heartbeat manager
+                        this.restart();
+                    }
                 }
                 else {
                     System.out.println("[INFO]: Leader failure detected but someone has already started an election in the meantime.");
@@ -184,27 +201,6 @@ public class HeartbeatManager {
                             electionInfo.updateBestCandidate(brokerId, myLogLength);
                             networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                         }
-//                        else if (brokerId == electionInfo.getBestCandidate()) {
-//                            int receivedAcksCount = electionInfo.getReceivedAcksCount();
-//                            int activeBrokersCount = sharedState.getBrokersCount();
-//
-//                            System.out.println("[INFO]: Rechecking election status after broker removal: " +
-//                                    receivedAcksCount + "/" + (activeBrokersCount - 1) + " ACKs received");
-//
-//                            // If we now have enough ACKs to become leader
-//                            if (receivedAcksCount >= activeBrokersCount - 1) {
-//                                System.out.println("[INFO]: Sufficient ACKs after broker removal. Becoming new leader");
-//                                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
-//                                sharedState.setNewLeaderId(brokerId);
-//                                List<LogEntry> completeLog = sharedState.getCompleteLog();
-//                                networkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
-//                                electionInfo.stopElection();
-//                                restart();
-//                                // Process any delayed messages
-//                                MessageDispatcher.resendPendingRequests();
-//                                MessageDispatcher.processDelayedMessages();
-//                            }
-//                        }
                     }
                 }
                 else {

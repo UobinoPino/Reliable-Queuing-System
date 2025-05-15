@@ -1,8 +1,10 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -13,6 +15,7 @@ public class ElectionInfo {
     private final AtomicInteger bestCandidateLogLength = new AtomicInteger(0);
     private final Set<Integer> receivedAcks = ConcurrentHashMap.newKeySet();
     private final ConcurrentMap<Integer, Integer> ioFailureCounts = new ConcurrentHashMap<>();
+    private final List<Runnable> postElectionCallbacks = new CopyOnWriteArrayList<>();
 
 
     /// Resets the election-related information as they were before starting the new leader election.
@@ -71,5 +74,16 @@ public class ElectionInfo {
         return receivedAcks.size();
     }
 
+    /// Adds a new callback to the list of functions executed after an election is completed.
+    public void addPostElectionCallback(Runnable callback) {
+        postElectionCallbacks.add(callback);
+    }
+
+    /// Executes all the post-election callbacks set.
+    public void executePostElectionCallbacks() {
+        for (Runnable callback : postElectionCallbacks) {
+            callback.run();
+        }
+    }
 
 }
