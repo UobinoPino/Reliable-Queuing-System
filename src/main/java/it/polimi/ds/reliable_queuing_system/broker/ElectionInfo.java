@@ -2,6 +2,7 @@ package it.polimi.ds.reliable_queuing_system.broker;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -11,6 +12,8 @@ public class ElectionInfo {
     private final AtomicInteger bestCandidate = new AtomicInteger(-1);
     private final AtomicInteger bestCandidateLogLength = new AtomicInteger(0);
     private final Set<Integer> receivedAcks = ConcurrentHashMap.newKeySet();
+    private final ConcurrentMap<Integer, Integer> ioFailureCounts = new ConcurrentHashMap<>();
+
 
     /// Resets the election-related information as they were before starting the new leader election.
     public void stopElection() {
@@ -18,6 +21,7 @@ public class ElectionInfo {
         bestCandidate.set(-1);
         bestCandidateLogLength.set(0);
         receivedAcks.clear();
+        ioFailureCounts.clear();
     }
 
     /// Updates the stored best-candidate with the given one.
@@ -26,6 +30,11 @@ public class ElectionInfo {
         bestCandidateLogLength.set(logLength);
         receivedAcks.clear();
     }
+    /// Increment and return the number of I/O failures for this broker during the current election
+    public int incrementIoFailures(int brokerId) {
+        return ioFailureCounts.merge(brokerId, 1, Integer::sum);
+    }
+
 
     /// Adds the given brokerId to the set of brokers who sent an ACK for the current broker nomination.
     public void addReceivedAck(int id) {

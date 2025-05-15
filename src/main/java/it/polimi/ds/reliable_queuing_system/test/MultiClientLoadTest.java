@@ -72,8 +72,8 @@ public class MultiClientLoadTest {
                     1000,      // max value
                     250,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
-                    10, // connection pool size
-                    20
+                    100, // connection pool size
+                    100
             );
 
             clients.add(client);
@@ -171,9 +171,9 @@ public class MultiClientLoadTest {
             String poolInput = scanner.nextLine().trim();
             int poolSize = poolInput.isEmpty() ? 10 : Integer.parseInt(poolInput);
 
-            System.out.print("Enter number of clients [default: 5]: ");
+            System.out.print("Enter number of clients [default: 10]: ");
             String clientsInput = scanner.nextLine().trim();
-            int clientCount = clientsInput.isEmpty() ? 5 : Integer.parseInt(clientsInput);
+            int clientCount = clientsInput.isEmpty() ? 10 : Integer.parseInt(clientsInput);
 
             System.out.print("Enter operations per client [default: 100]: ");
             String opsInput = scanner.nextLine().trim();

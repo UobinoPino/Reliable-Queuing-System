@@ -559,7 +559,7 @@ public class LoadTestClient {
                     250,   // operation delay ms
                     verboseLogging,
                     poolSize , // max pool size
-                    10 // concurrent operations
+                    20 // concurrent operations
             );
 
             loadTestClient.startTest();

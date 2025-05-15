@@ -24,6 +24,7 @@ public class NetworkManager {
 
     public static final int SOCKET_TIMEOUT = 5000;
     private static final int PER_PEER_POOL_SIZE = 5000;
+    private static final int ELECTION_IO_FAILURE_THRESHOLD = 1;
 
     // pool of live connections (socket + cached ObjectOutputStream)
     private final ConcurrentMap<Address, BlockingQueue<PooledConnection>> pools = new ConcurrentHashMap<>();
@@ -137,6 +138,16 @@ public class NetworkManager {
                         returnConn(addr, pc);
                     } catch (IOException e) {
                         System.out.println("[ERROR]: Unable to broadcast the message to node " + id + ". It has probably crashed");
+                        // if the number of failures is greater than the threshold, remove the broker from the list
+                        if (electionInfo.isElectionInProgress()) {
+                            int failures = electionInfo.incrementIoFailures(id);
+                            if (failures >= ELECTION_IO_FAILURE_THRESHOLD) {
+                                state.removeBrokerAddress(id);
+                                System.out.println("[INFO]: REMOVED crashed broker " + id + " from broker list");
+                            } else {
+                                System.out.println("[INFO]: Will retry removal for broker " + id + " (failure " + failures + "/" + ELECTION_IO_FAILURE_THRESHOLD + ")");
+                            }
+                        }
                     }
 
                 }
