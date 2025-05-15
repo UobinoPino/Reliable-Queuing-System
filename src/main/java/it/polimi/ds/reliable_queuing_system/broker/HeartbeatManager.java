@@ -67,6 +67,10 @@ public class HeartbeatManager {
         missedHeartbeats.put(brokerId, 0);
     }
 
+    public void stop() {
+        heartbeatThreadExecutor.shutdownNow();
+    }
+
     /// Stops the current heartbeat thread execution and restarts it according to the current role of the broker
     public void restart() {
         heartbeatThreadExecutor.shutdownNow();
@@ -127,14 +131,19 @@ public class HeartbeatManager {
                     int myLogLength = sharedState.getLogLength();
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
                     networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
+                    // stop heartbeat monitor task
+                    this.stop();
                 }
                 else {
                     System.out.println("[INFO]: Leader failure detected but someone has already started an election in the meantime.");
+                    this.stop();
                 }
             }
         }
         else {
-            System.out.println("[INFO]: Skipping heartbeat monitor task because an election is already in progress.");
+            System.out.println("[INFO]: Stopping heartbeat monitor task because an election is already in progress.");
+            this.stop();
         }
     }
 
@@ -175,28 +184,27 @@ public class HeartbeatManager {
                             electionInfo.updateBestCandidate(brokerId, myLogLength);
                             networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                         }
-                        else if (brokerId == electionInfo.getBestCandidate()) {
-                            int receivedAcksCount = electionInfo.getReceivedAcksCount();
-                            int activeBrokersCount = sharedState.getBrokersCount();
-
-                            System.out.println("[INFO]: Rechecking election status after broker removal: " +
-                                    receivedAcksCount + "/" + (activeBrokersCount - 1) + " ACKs received");
-
-                            // If we now have enough ACKs to become leader
-                            if (receivedAcksCount >= activeBrokersCount - 1) {
-                                System.out.println("[INFO]: Sufficient ACKs after broker removal. Becoming new leader");
-                                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
-                                sharedState.setNewLeaderId(brokerId);
-                                List<LogEntry> completeLog = sharedState.getCompleteLog();
-                                networkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
-                                electionInfo.stopElection();
-                                restart();
-                                // Process any delayed messages
-                                MessageDispatcher.resendPendingRequests();
-                                MessageDispatcher.processDelayedMessages();
-                            }
-                        }
-
+//                        else if (brokerId == electionInfo.getBestCandidate()) {
+//                            int receivedAcksCount = electionInfo.getReceivedAcksCount();
+//                            int activeBrokersCount = sharedState.getBrokersCount();
+//
+//                            System.out.println("[INFO]: Rechecking election status after broker removal: " +
+//                                    receivedAcksCount + "/" + (activeBrokersCount - 1) + " ACKs received");
+//
+//                            // If we now have enough ACKs to become leader
+//                            if (receivedAcksCount >= activeBrokersCount - 1) {
+//                                System.out.println("[INFO]: Sufficient ACKs after broker removal. Becoming new leader");
+//                                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
+//                                sharedState.setNewLeaderId(brokerId);
+//                                List<LogEntry> completeLog = sharedState.getCompleteLog();
+//                                networkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
+//                                electionInfo.stopElection();
+//                                restart();
+//                                // Process any delayed messages
+//                                MessageDispatcher.resendPendingRequests();
+//                                MessageDispatcher.processDelayedMessages();
+//                            }
+//                        }
                     }
                 }
                 else {

@@ -11,31 +11,31 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 /// A class that will take care of handling messages received by the broker.
 public class MessageDispatcher {
     public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager, NetworkManager networkManager, ElectionInfo electionInfo) {
-        MessageDispatcher.brokerId = brokerId;
-        MessageDispatcher.sharedState = sharedState;
-        MessageDispatcher.heartbeatManager = heartbeatManager;
-        MessageDispatcher.logManager = logManager;
-        MessageDispatcher.networkManager = networkManager;
-        MessageDispatcher.electionInfo = electionInfo;
-        pendingRequestIds = new ConcurrentLinkedQueue<>();
-        pendingRequests = new ConcurrentHashMap<>();
-        delayedMessages = new ConcurrentLinkedQueue<>();
+        this.brokerId = brokerId;
+        this.sharedState = sharedState;
+        this.heartbeatManager = heartbeatManager;
+        this.logManager = logManager;
+        this.networkManager = networkManager;
+        this.electionInfo = electionInfo;
+        this.pendingRequestIds = new ConcurrentLinkedQueue<>();
+        this.pendingRequests = new ConcurrentHashMap<>();
+        this.delayedMessages = new ConcurrentLinkedQueue<>();
     }
 
-    private static int brokerId = 0;
-    private static SharedState sharedState = null;
-    private static HeartbeatManager heartbeatManager = null;
-    private static LogManager logManager = null;
-    private static NetworkManager networkManager = null;
+    private final int brokerId;
+    private final SharedState sharedState;
+    private final HeartbeatManager heartbeatManager;
+    private final LogManager logManager;
+    private final NetworkManager networkManager;
 
-    private static ElectionInfo electionInfo = null;
+    private final ElectionInfo electionInfo;
 
-    private static Queue<String> pendingRequestIds = null;
-    private static Map<String, Message> pendingRequests = Map.of();
-    private static Queue<Message> delayedMessages = null;
+    private final Queue<String> pendingRequestIds;
+    private final Map<String, Message> pendingRequests;
+    private final Queue<Message> delayedMessages;
 
     /// Dispatch the given [Message] to its dedicated handler method.
-    public static void dispatch(Message message) throws ClassNotFoundException {
+    public void dispatch(Message message) throws ClassNotFoundException {
         // if there is an election ongoing, ignore messages unrelated to the election,
         // and store them so that they will be handled after the election
         if (electionInfo.isElectionInProgress() && !isElectionRelated(message)) {
@@ -65,17 +65,17 @@ public class MessageDispatcher {
     }
 
     /// Returns whether the broker is the current leader of the system or not.
-    private static boolean isLeader() {
+    private boolean isLeader() {
         return sharedState.getLeaderId() == brokerId;
     }
 
     /// Returns whether the given message is related to the election of a leader or not.
-    private static boolean isElectionRelated(Message msg) {
+    private boolean isElectionRelated(Message msg) {
         return msg instanceof NewLeaderNomination || msg instanceof NewLeaderNominationAck || msg instanceof NewLeaderAnnouncement;
     }
 
     /// Returns true if the second candidate provided is better than the first one, false otherwise.
-    private static boolean compareCandidates(int id1, int logLength1, int id2, int logLength2) {
+    private boolean compareCandidates(int id1, int logLength1, int id2, int logLength2) {
         if (logLength1 > logLength2) {
             return false;
         } else if (logLength1 < logLength2) {
@@ -86,7 +86,7 @@ public class MessageDispatcher {
     }
 
     /// Handler method for received [EntryPropagation] messages.
-    private static void handleEntryPropagation(EntryPropagation msg) {
+    private void handleEntryPropagation(EntryPropagation msg) {
         if (!isLeader()) {
             System.out.println("[INFO]: Received propagation of log entry" + msg.logEntry() + ". Adding it to the waiting queue...");
 
@@ -100,7 +100,7 @@ public class MessageDispatcher {
     }
 
     /// Handler method for received [EntryPropagationAck] messages.
-    private static void handleEntryPropagationAck(EntryPropagationAck msg) {
+    private void handleEntryPropagationAck(EntryPropagationAck msg) {
         if (isLeader()) {
             if(sharedState.isEntryWaitingAck(msg.logEntry())) {
                 System.out.println("[INFO]: Received propagation ACK for waiting log entry " + msg.logEntry() + ". Adding it to the log...");
@@ -115,7 +115,7 @@ public class MessageDispatcher {
     }
 
     /// Handler method for received [EntryCommit] messages.
-    private static void handleEntryCommit(EntryCommit msg) {
+    private void handleEntryCommit(EntryCommit msg) {
         if (!isLeader()) {
             System.out.println("[INFO]: Received commit of log entry" + msg.logEntry() + ". Adding it to the log...");
 
@@ -126,7 +126,7 @@ public class MessageDispatcher {
 
     /// Handler method for received messages that doesn't need custom handler.
     /// (They will be propagated and wait for an ack from another node).
-    private static void handleGenericRequest(Message msg) {
+    private void handleGenericRequest(Message msg) {
         System.out.println("[INFO]: Received " + msg);
         if (isLeader()) {
             // create a new log entry for given request
@@ -146,10 +146,10 @@ public class MessageDispatcher {
             String id = null;
             if (!(msg instanceof BrokerJoinRequest)) {
                 switch (msg) {
-                    case ClientIdRequest req ->  id = req.clientAddress() + ":" + "-1";
-                    case ClientOffsetsUpdateRequest req -> id = req.clientAddress() + ":" + req.operationId();
-                    case WriteRequest req ->  id = req.clientAddress() + ":" + req.operationId();
-                    default ->  throw new RuntimeException("Unexpected message type treated as Generic Request");
+                    case ClientIdRequest req -> { id = req.clientAddress() + ":" + "-1"; }
+                    case ClientOffsetsUpdateRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
+                    case WriteRequest req -> { id = req.clientAddress() + ":" + req.operationId(); }
+                    default -> { throw new RuntimeException("Unexpected message type treated as Generic Request"); }
                 }
                 if (pendingRequests.putIfAbsent(id, msg) == null) {
                     pendingRequestIds.add(id);
@@ -172,7 +172,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [ReadRequest] messages.
-    private static void handleReadRequest(ReadRequest msg) {
+    private void handleReadRequest(ReadRequest msg) {
         System.out.println("[INFO]: Received read request " + msg);
 
         // retrieve the values to be returned to the client
@@ -194,7 +194,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [BrokerRemoval] messages.
-    private static void handleBrokerRemoval(BrokerRemoval msg) {
+    private void handleBrokerRemoval(BrokerRemoval msg) {
         // Only process if we're not the leader (leader already removed the broker before broadcasting the BrokerRemoval message)
         if (!isLeader()) {
             System.out.println("[INFO]: Received broker removal notification for broker " + msg.brokerId() + ". Removing...");
@@ -203,7 +203,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [Heartbeat] messages.
-    private static void handleHeartbeat(Heartbeat msg) {
+    private void handleHeartbeat(Heartbeat msg) {
         // First check if an election is in progress
         if (electionInfo.isElectionInProgress()) {
             System.out.println("[INFO]: Ignoring heartbeat since an election is in progress");
@@ -223,7 +223,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [HeartbeatAck] messages.
-    private static void handleHeartbeatAck(HeartbeatAck msg) {
+    private void handleHeartbeatAck(HeartbeatAck msg) {
         if (isLeader()) {
             Integer followerId = msg.brokerId();
             heartbeatManager.updateLastHeartbeatAckReceived(followerId);
@@ -232,7 +232,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [NewLeaderNomination] messages.
-    private static void handleNewLeaderNomination(NewLeaderNomination msg) {
+    private void handleNewLeaderNomination(NewLeaderNomination msg) {
         System.out.println("[INFO]: Received leader nomination from broker " + msg.brokerId() + " with log length " + msg.logLength());
 
         // If this is the first nomination received...
@@ -240,6 +240,8 @@ public class MessageDispatcher {
             // remove the leader from the list of known brokers
             sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
+            // stop the heartbeat manager
+            heartbeatManager.stop();
 
             // compare your log with the received one
             int myLogLength = sharedState.getLogLength();
@@ -293,7 +295,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [NewLeaderNominationAck] messages.
-    private static void handleNewLeaderNominationAck(NewLeaderNominationAck msg) {
+    private void handleNewLeaderNominationAck(NewLeaderNominationAck msg) {
         // if an election is in progress and I'm the best candidate...
         if (electionInfo.isElectionInProgress() && electionInfo.getBestCandidate() == brokerId) {
             // add the id of the sender to the set of received ACKs
@@ -330,7 +332,7 @@ public class MessageDispatcher {
     }
 
     /// Handler for received [NewLeaderAnnouncement] messages.
-    private static void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
+    private void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
         if (electionInfo.isElectionInProgress()) {
             System.out.println("[INFO]: Received leader announcement from broker " + msg.brokerId());
 
@@ -351,14 +353,14 @@ public class MessageDispatcher {
         }
     }
 
-    private static void handleRequestCompletedAck(RequestCompletedAck msg) {
+    private void handleRequestCompletedAck(RequestCompletedAck msg) {
         String id = msg.clientAddress() + ":" + msg.operationId();
         pendingRequestIds.remove(id);
         pendingRequests.remove(id);
         System.out.println("[INFO]: Completed request " + id + " has been removed from pending requests");
     }
 
-    public static void resendPendingRequests() {
+    private void resendPendingRequests() {
         while (!pendingRequestIds.isEmpty()) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
@@ -371,7 +373,7 @@ public class MessageDispatcher {
         }
     }
 
-    public static void processDelayedMessages() {
+    private void processDelayedMessages() {
         while (!delayedMessages.isEmpty()) {
             Message msg = delayedMessages.poll();
             try {
