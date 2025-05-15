@@ -13,6 +13,7 @@ import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Client {
     private static final Scanner scanner = new Scanner(System.in);
@@ -27,7 +28,7 @@ public class Client {
     private static Integer clientId;
     private static Integer nextOperationId = 0;
 
-    private static final Lock clientStateLock = new java.util.concurrent.locks.ReentrantLock();
+    private static final Lock clientStateLock = new ReentrantLock();
     private static List<Integer> pendingReadValues;
     private static ClientState clientState = ClientState.READY;
 
@@ -35,6 +36,9 @@ public class Client {
 
     private static final ScheduledExecutorService waitingTimeoutExecutor = Executors.newScheduledThreadPool(1);
     private static ScheduledFuture<?> waitingTimeoutFuture;
+
+    // pool for handling connections in parallel
+    private static final ExecutorService connectionPool = Executors.newFixedThreadPool(100);
 
     private static void startWaitingTimeout() {
         waitingTimeoutFuture = waitingTimeoutExecutor.schedule(Client::waitingTimeoutExpired, 1, TimeUnit.MINUTES);  //TODO: replace with constant timeout value
@@ -63,9 +67,6 @@ public class Client {
         String clientIp = obtainClientIp();
         int clientPort = obtainClientPort();
         clientAddress = new Address(clientIp, clientPort);
-
-//        // obtain known broker addr
-//        brokerAddress = obtainKnownBrokerAddress();
 
         // start thread to wait for incoming messages
         Thread messagesIngressThread = new Thread(Client::incomingMessagesListener);
@@ -167,25 +168,34 @@ public class Client {
 
             while (!serverSocket.isClosed()) {
                 Socket socket = serverSocket.accept();
-                ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-
-                //TODO: maybe missing a while !socket.isClosed()?
-
-                try {
-                    Message message = (Message) in.readObject();
-
-                    switch (message) {
-                        case ClientIdAssignment msg -> handleClientIdAssignment(msg);
-                        case ReadResponse msg -> handleReadResponse(msg);
-                        case ReadConfirmation msg -> handleReadConfirmation(msg);
-                        case WriteResponse msg -> handleWriteResponse(msg);
-                        default -> throw new ClassNotFoundException();
-                    }
-                } catch (ClassNotFoundException | ClassCastException ignored) {
-                    System.out.println("[INFO]: Unknown message received, it will be ignored.");
-                }
+                connectionPool.submit(() -> handleConnection(socket));
             }
         } catch (IOException e) {
+            System.out.println("[FATAL ERROR]: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    private static void handleConnection(Socket s) {
+        try (Socket socket = s;
+             ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
+
+            while (!socket.isClosed()){
+                Message message = (Message) in.readObject();
+
+                switch (message) {
+                    case ClientIdAssignment msg -> handleClientIdAssignment(msg);
+                    case ReadResponse msg -> handleReadResponse(msg);
+                    case ReadConfirmation msg -> handleReadConfirmation(msg);
+                    case WriteResponse msg -> handleWriteResponse(msg);
+                    default -> throw new ClassNotFoundException();
+                }
+            }
+        }
+        catch (ClassNotFoundException | ClassCastException ignored) {
+            System.out.println("[INFO]: Unknown message received, it will be ignored.");
+        }
+        catch (IOException e) {
             System.out.println("[FATAL ERROR]: " + e.getMessage());
             System.exit(1);
         }
@@ -203,9 +213,8 @@ public class Client {
                 try {
                     currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
                     currentOutStream.flush();
-                } catch (IOException | NullPointerException e) {
-                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
-                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                } catch (IOException | NullPointerException ignored) {
+                    // peer crashed but client already received the ID, so no need to do anything
                 }
             } else {
                 System.out.println("[INFO]: Unexpected ClientIdAssignment message received.");
@@ -222,7 +231,6 @@ public class Client {
                 cancelWaitingTimeout();
                 startWaitingTimeout();
 
-                //TODO: send ACK to connected broker?
             } else {
                 System.out.println("[INFO]: Unexpected ReadResponse message received.");
             }
@@ -242,11 +250,10 @@ public class Client {
                 cancelWaitingTimeout();
 
                 try {
-                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
+                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, msg.operationId()));
                     currentOutStream.flush();
-                } catch (IOException | NullPointerException e) {
-                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
-                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                } catch (IOException | NullPointerException ignored) {
+                    // peer crashed but client already received the read confirmation, so no need to do anything
                 }
             } else {
                 System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
@@ -263,11 +270,10 @@ public class Client {
                 cancelWaitingTimeout();
 
                 try {
-                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, -1));
+                    currentOutStream.writeObject(new RequestCompletedAck(clientAddress, msg.operationId()));
                     currentOutStream.flush();
-                } catch (IOException | NullPointerException e) {
-                    System.out.println("OH NO, OH NO, OH NO NO NO NO NO");
-                    //TODO: che cosa succede se il broker a cui eri connesso crasha ma a te arriva comunque l'esito della tua richiesta?
+                } catch (IOException | NullPointerException ignored) {
+                    // peer crashed but client already received the write response, so no need to do anything
                 }
             } else {
                 System.out.println("[INFO]: Unexpected WriteResponse message received.");
@@ -286,7 +292,7 @@ public class Client {
         try {
             currentSocket = new Socket();
             SocketAddress socketAddress = new java.net.InetSocketAddress(brokerAddress.ip(), brokerAddress.port());
-            currentSocket.connect(socketAddress, NetworkManager.socketTimeout);
+            currentSocket.connect(socketAddress, NetworkManager.SOCKET_TIMEOUT);
             currentOutStream = new ObjectOutputStream(currentSocket.getOutputStream());
         } catch (IOException e) {
             System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");

@@ -1,14 +1,13 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
-import it.polimi.ds.reliable_queuing_system.utils.Address;
 
 import java.util.*;
 import java.util.concurrent.*;
 
 /// A class that will take care of the heartbeat mechanism to detect eventual crashes of other brokers.
 public class HeartbeatManager {
-    public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo) {
+    public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo, NetworkManager networkManager) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
         this.electionInfo = electionInfo;
@@ -17,6 +16,8 @@ public class HeartbeatManager {
 
         this.lastHeartbeats = new ConcurrentHashMap<>();
         this.missedHeartbeats = new ConcurrentHashMap<>();
+
+        this.networkManager = networkManager;
 
         // start the heartbeat sender/monitor thread
         restart();
@@ -40,13 +41,15 @@ public class HeartbeatManager {
     private final Map<Integer, Long> lastHeartbeats;
     private final Map<Integer, Integer> missedHeartbeats;
 
+    private final NetworkManager networkManager;
+
 
     /**
      * Offload sending HeartbeatAck to dedicated executor
      */
     public void sendAck(int followerId) {
         ackExecutor.submit(() ->
-                NetworkManager.forwardMessageToLeader(new HeartbeatAck(followerId), sharedState)
+                networkManager.forwardMessageToLeader(new HeartbeatAck(followerId), sharedState)
         );
     }
 
@@ -88,7 +91,7 @@ public class HeartbeatManager {
     /// and check if any of them has crashed (and eventually broadcast their removal to remaining followers).
     private void heartbeatSenderTask() {
         // send heartbeat to all active followers
-        NetworkManager.broadcastMessage(new Heartbeat(), brokerId, sharedState);
+        networkManager.broadcastMessage(new Heartbeat(), brokerId, sharedState);
 
         // Check for follower timeouts
         Set<Integer> removedBrokers = checkFollowersTimeouts();
@@ -96,7 +99,7 @@ public class HeartbeatManager {
         // Process broker removals
         for (Integer broker : removedBrokers) {
             System.out.println("[INFO]: Broker " + broker + " failed. Asking other followers to remove it...");
-            NetworkManager.broadcastMessage(new BrokerRemoval(broker), brokerId, sharedState);
+            networkManager.broadcastMessage(new BrokerRemoval(broker), brokerId, sharedState);
         }
     }
 
@@ -122,9 +125,7 @@ public class HeartbeatManager {
                     // start leader election by proposing self as candidate
                     int myLogLength = sharedState.getLogLength();
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
-                    NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
-
-
+                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                 }
                 else {
                     System.out.println("[INFO]: Leader failure detected but someone has already started an election in the meantime.");
@@ -157,12 +158,11 @@ public class HeartbeatManager {
                 if (missed > MISSABLE_HEARTBEATS) {
                     System.out.println("[INFO]: Removing broker " + bId + "...");
                     removedBrokers.add(bId);
-                    NetworkManager.cleanupConnectionsFor(sharedState.getBrokerAddress(bId));
+                    networkManager.cleanupConnectionsFor(sharedState.getBrokerAddress(bId));
                     sharedState.removeBrokerAddress(bId);
                     missedHeartbeats.remove(bId);
 
                     // If an election is in progress, update the active brokers list
-                    //TODO: ma questo metodo viene mai chiamato quando una election è già in progress?
                     if (electionInfo.isElectionInProgress()) {
                         // If the failed broker was the best candidate in the election, restart the election
                         if (electionInfo.getBestCandidate() == bId) {
@@ -172,9 +172,7 @@ public class HeartbeatManager {
                             // Start leader election by proposing self as candidate
                             int myLogLength = sharedState.getLogLength();
                             electionInfo.updateBestCandidate(brokerId, myLogLength);
-                            NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
-
-//
+                            networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                         }
                     }
                 }

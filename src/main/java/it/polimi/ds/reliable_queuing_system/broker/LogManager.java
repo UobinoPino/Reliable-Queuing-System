@@ -5,13 +5,16 @@ import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 /// A class that will take care of committing log entries.
 public class LogManager {
-    public LogManager(int brokerId, SharedState sharedState) {
+    public LogManager(int brokerId, SharedState sharedState, NetworkManager networkManager) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
+        this.networkManager = networkManager;
     }
 
     private final int brokerId;
     private final SharedState sharedState;
+
+    private final NetworkManager networkManager;
 
     /// Tries to commit the given [LogEntry] in the [SharedState] log
     /// and (if succeeded) perform the operation associated with it.
@@ -50,7 +53,7 @@ public class LogManager {
 
         // If leader, return a BrokerJoinResponse to the requesting broker
         if (isLeader()) {
-            NetworkManager.sendMessage(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
+            networkManager.sendMessage(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
         }
     }
 
@@ -61,7 +64,7 @@ public class LogManager {
 
         // if leader, return this id to the requesting client
         if (isLeader()) {
-            NetworkManager.sendMessage(new ClientIdAssignment(clientId), req.clientAddress());
+            networkManager.sendMessage(new ClientIdAssignment(clientId), req.clientAddress());
         }
     }
 
@@ -72,7 +75,7 @@ public class LogManager {
 
         // if leader, return the read confirmation to the requesting client
         if(isLeader()){
-            NetworkManager.sendMessage(new ReadConfirmation(req.operationId()), req.clientAddress());
+            networkManager.sendMessage(new ReadConfirmation(req.operationId()), req.clientAddress());
         }
     }
 
@@ -83,7 +86,7 @@ public class LogManager {
 
         // if leader, send the WriteResponse to the requesting client
         if(isLeader()){
-            NetworkManager.sendMessage(new WriteResponse(req.operationId()), req.clientAddress());
+            networkManager.sendMessage(new WriteResponse(req.operationId()), req.clientAddress());
         }
     }
 }

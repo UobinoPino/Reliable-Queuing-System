@@ -10,11 +10,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 /// A class that will take care of handling messages received by the broker.
 public class MessageDispatcher {
-    public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager, ElectionInfo electionInfo) {
+    public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager, NetworkManager networkManager, ElectionInfo electionInfo) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
         this.heartbeatManager = heartbeatManager;
         this.logManager = logManager;
+        this.networkManager = networkManager;
         this.electionInfo = electionInfo;
         this.pendingRequestIds = new ConcurrentLinkedQueue<>();
         this.pendingRequests = new ConcurrentHashMap<>();
@@ -25,6 +26,7 @@ public class MessageDispatcher {
     private final SharedState sharedState;
     private final HeartbeatManager heartbeatManager;
     private final LogManager logManager;
+    private final NetworkManager networkManager;
 
     private final ElectionInfo electionInfo;
 
@@ -93,7 +95,7 @@ public class MessageDispatcher {
 
             // send an ACK to the leader
             Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
-            NetworkManager.sendMessage(new EntryPropagationAck(msg.logEntry()), leaderAddr);
+            networkManager.sendMessage(new EntryPropagationAck(msg.logEntry()), leaderAddr);
         }
     }
 
@@ -107,7 +109,7 @@ public class MessageDispatcher {
                 logManager.commitEntry(msg.logEntry());
 
                 // broadcast the EntryCommit message
-                NetworkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
+                networkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
             }
         }
     }
@@ -133,7 +135,7 @@ public class MessageDispatcher {
             // if multi-broker system, store the entry as waiting for ACK and propagate it
             if (sharedState.getBrokersCount() > 1) {
                 sharedState.addWaitingAckEntry(newEntry);
-                NetworkManager.broadcastMessage(new EntryPropagation(newEntry), brokerId, sharedState);
+                networkManager.broadcastMessage(new EntryPropagation(newEntry), brokerId, sharedState);
             }
             // else (single-broker system) commit the entry locally
             else {
@@ -157,7 +159,7 @@ public class MessageDispatcher {
 
             try {
                 // Forward to leader
-                NetworkManager.forwardMessageToLeader(msg, sharedState);
+                networkManager.forwardMessageToLeader(msg, sharedState);
             } catch (RuntimeException e) {
                 System.out.println("[INFO]: Delaying the message to be handled after the election.");
                 if (id != null) {
@@ -168,34 +170,6 @@ public class MessageDispatcher {
             }
         }
     }
-
-//    /**
-//     * Process delayed messages after becoming leader, avoiding duplicates
-//     */
-//    private void processDelayedMessages() {
-//        Set<String> processedMsgSignatures = new HashSet<>();
-//        Queue<Message> remainingMessages = new ConcurrentLinkedQueue<>();
-//
-//        // First pass: identify unique message signatures
-//        while (!delayedMessages.isEmpty()) {
-//            Message msg = delayedMessages.poll();
-//            String msgSignature = getMessageSignature(msg);
-//
-//            // Only process messages we haven't seen before
-//            if (!processedMsgSignatures.contains(msgSignature)) {
-//                try {
-//                    // Process the message as leader
-//                    processedMsgSignatures.add(msgSignature);
-//                    dispatch(msg);
-//                } catch (ClassNotFoundException e) {
-//                    System.out.println("[ERROR]: Unknown message type in delayed messages queue");
-//                }
-//            } else {
-//                // It's a duplicate, don't process again
-//                System.out.println("[INFO]: Skipping duplicate delayed message: " + msg);
-//            }
-//        }
-//    }
 
     // Helper to create a unique signature for messages
     private String getMessageSignature(Message msg) {
@@ -225,7 +199,7 @@ public class MessageDispatcher {
         }
 
         // send the ReadResponse to the client
-        NetworkManager.sendMessage(new ReadResponse(msg.clientId(), msg.operationId(), valuesToReturn), msg.clientAddress());
+        networkManager.sendMessage(new ReadResponse(msg.clientId(), msg.operationId(), valuesToReturn), msg.clientAddress());
 
         // create a new ClientOffsetUpdate message and handle it accordingly
         ClientOffsetsUpdateRequest offsetsUpdateMsg = new ClientOffsetsUpdateRequest(msg.queueName(), requestedQueue.size(), msg.clientId(), msg.operationId(), msg.clientAddress());
@@ -296,7 +270,7 @@ public class MessageDispatcher {
 
                 // send ACK for the received nomination
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
             }
             // else...
             else {
@@ -304,7 +278,7 @@ public class MessageDispatcher {
 
                 // set self as best candidate and broadcast nomination
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
-                NetworkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
             }
         }
@@ -322,7 +296,7 @@ public class MessageDispatcher {
                 electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
 
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                NetworkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
             }
             // else, simply ignore the nomination
             else {
@@ -355,7 +329,7 @@ public class MessageDispatcher {
 
                 // broadcast new leader announcement
                 List<LogEntry> completeLog = sharedState.getCompleteLog();
-                NetworkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
+                networkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
 
                 // terminate the election phase
                 electionInfo.stopElection();
@@ -398,34 +372,26 @@ public class MessageDispatcher {
     }
 
     private void resendPendingRequests() {
-   //     System.out.println("[DEBUG]: Starting resendPendingRequests, pendingRequestIds=" + pendingRequestIds);
         while (!pendingRequestIds.isEmpty()) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
 
-   //         System.out.println("[DEBUG]: Resending pending request id=" + id + ", msg=" + msg);
             try {
                 dispatch(msg);
-        //        System.out.println("[DEBUG]: Dispatched pending request id=" + id);
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for pending id=" + id + ": " + e.getMessage());
             }
         }
-   //     System.out.println("[DEBUG]: Completed resendPendingRequests, pendingRequestIds now=" + pendingRequestIds);
     }
 
     private void processDelayedMessages() {
-     //   System.out.println("[DEBUG]: Starting processDelayedMessages, delayedMessages.size=" + delayedMessages.size());
         while (!delayedMessages.isEmpty()) {
             Message msg = delayedMessages.poll();
-     //       System.out.println("[DEBUG]: Processing delayed message msg=" + msg);
             try {
                 dispatch(msg);
-      //          System.out.println("[DEBUG]: Dispatched delayed message msg=" + msg);
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for delayed msg=" + msg + ": " + e.getMessage());
             }
         }
-    //    System.out.println("[DEBUG]: Completed processDelayedMessages, delayedMessages.size=" + delayedMessages.size());
     }
 }
