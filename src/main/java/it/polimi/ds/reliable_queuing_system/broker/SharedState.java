@@ -61,6 +61,11 @@ public class SharedState implements Serializable {
     }
 
 
+    /// Returns a list of entries waiting for commit
+    public List<LogEntry> getWaitingCommitEntries() {
+        return new ArrayList<>(waitingCommitEntries);
+    }
+
     //region PERSISTENCE-RELATED METHODS
 
     /// Initialize the Gson object with a custom serialization/deserialization adapter for the [Address] type.

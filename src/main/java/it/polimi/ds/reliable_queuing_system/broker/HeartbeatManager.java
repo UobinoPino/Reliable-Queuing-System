@@ -1,23 +1,29 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.*;
+import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.util.*;
 import java.util.concurrent.*;
 
 /// A class that will take care of the heartbeat mechanism to detect eventual crashes of other brokers.
 public class HeartbeatManager {
-    public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo, NetworkManager networkManager) {
+
+
+    public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo, NetworkManager networkManager, LogManager logManager) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
         this.electionInfo = electionInfo;
+        this.networkManager = networkManager;
+        this.logManager = logManager;
+
         this.heartbeatThreadExecutor = Executors.newSingleThreadScheduledExecutor();
         this.ackExecutor = Executors.newCachedThreadPool();
 
         this.lastHeartbeats = new ConcurrentHashMap<>();
         this.missedHeartbeats = new ConcurrentHashMap<>();
 
-        this.networkManager = networkManager;
+
 
         // start the heartbeat sender/monitor thread
         restart();
@@ -42,6 +48,7 @@ public class HeartbeatManager {
     private final Map<Integer, Integer> missedHeartbeats;
 
     private final NetworkManager networkManager;
+     private final LogManager logManager;
 
 
     /**
@@ -121,10 +128,23 @@ public class HeartbeatManager {
 
                     // remove the leader from the list of known brokers
                     sharedState.removeBrokerAddress(sharedState.getLeaderId());
+                    
+                    List<LogEntry> waitingEntries = sharedState.getWaitingCommitEntries();
+                    if (!waitingEntries.isEmpty()) {
+                        System.out.println("[INFO]: Processing " + waitingEntries.size() + " entries that were waiting for commit");
+                        for (LogEntry entry : waitingEntries) {
+                            // Commit each entry locally
+                            logManager.commitEntry(entry);
 
-                    //TODO: add to log the log entries waiting for commit (if any)
-
-                    //TODO: send confirmation to client for each waiting log entry manually added
+                            // Send confirmation to client for each waiting log entry manually
+                            Message msg = entry.message();
+                            if (msg instanceof ClientOffsetsUpdateRequest req) {
+                                networkManager.sendMessage(new ReadConfirmation(req.operationId()), req.clientAddress());
+                            } else if (msg instanceof WriteRequest req) {
+                                networkManager.sendMessage(new WriteResponse(req.operationId()), req.clientAddress());
+                            }
+                        }
+                    }
 
                     // if there are other brokers to talk with...
                     if (sharedState.getBrokersCount() > 1) {

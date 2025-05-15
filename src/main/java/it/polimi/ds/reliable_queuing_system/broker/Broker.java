@@ -200,8 +200,8 @@ public class Broker {
     /// Create an instance for each one of the Manager classes used by the Broker.
     private static void initializeManagers() {
         networkManager = new NetworkManager(electionInfo);
-        heartbeatManager = new HeartbeatManager(brokerId, sharedState, electionInfo, networkManager);
         logManager = new LogManager(brokerId, sharedState, networkManager);
+        heartbeatManager = new HeartbeatManager(brokerId, sharedState, electionInfo, networkManager,logManager);
         messageDispatcher = new MessageDispatcher(
                 brokerId,
                 sharedState,
