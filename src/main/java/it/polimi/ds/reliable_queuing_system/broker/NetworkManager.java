@@ -66,7 +66,7 @@ public class NetworkManager {
         }
     }
 
-    public void sendMessage(Message msg, Address peer) {
+    public boolean sendMessage(Message msg, Address peer) {
         PooledConnection pc = null;
         try {
             pc = borrowConn(peer);
@@ -76,6 +76,7 @@ public class NetworkManager {
             pc.outStream().flush();
             System.out.println("[INFO]: Sent message " + msg + " to " + peer + "...");
             returnConn(peer, pc);
+            return true;
         } catch (IOException e) {
             // on fail drop this conn
             if (pc != null) {
@@ -84,6 +85,7 @@ public class NetworkManager {
                 } catch (IOException ignored) {}
             }
             System.out.println("Failed to send message to " + peer + ":  it has probably crashed.");
+            return false;
         }
     }
 

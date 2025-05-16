@@ -262,7 +262,16 @@ public class MessageDispatcher {
 
                 // send ACK for the received nomination
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                if (!success) {
+                    System.out.println("[INFO]: Restoring previous best candidate");
+
+                    electionInfo.updateBestCandidate(brokerId, myLogLength);
+
+                    System.out.println("[INFO]: Previous best candidate was self, re-broadcasting nomination");
+                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                    electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
+                }
             }
             // else...
             else {
@@ -280,7 +289,9 @@ public class MessageDispatcher {
             System.out.println("[INFO]: Comparing log lengths - stored best ("+ electionInfo.getBestCandidate() +"): " + electionInfo.getBestCandidateLogLength() + ", candidate (" + msg.brokerId() + "): " + msg.logLength());
 
             // compared received log with the stored best one
-            boolean candidateIsBetter = compareCandidates(electionInfo.getBestCandidate(), electionInfo.getBestCandidateLogLength(), msg.brokerId(), msg.logLength());
+            int bestCandidateId = electionInfo.getBestCandidate();
+            int bestCandidateLogLength = electionInfo.getBestCandidateLogLength();
+            boolean candidateIsBetter = compareCandidates(bestCandidateId, bestCandidateLogLength, msg.brokerId(), msg.logLength());
 
             // if received is better, update best accordingly and send ACK
             if (candidateIsBetter) {
@@ -289,7 +300,18 @@ public class MessageDispatcher {
                 electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
 
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                if (!success) {
+                    System.out.println("[INFO]: Restoring previous best candidate");
+
+                    electionInfo.updateBestCandidate(bestCandidateId, bestCandidateLogLength);
+
+                    // and if it was self, re-broadcast nomination
+                    if (bestCandidateId == brokerId) {
+                        networkManager.broadcastMessage(new NewLeaderNomination(bestCandidateId, bestCandidateLogLength), brokerId, sharedState);
+                        electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
+                    }
+                }
             }
             // else, simply ignore the nomination
             else {
