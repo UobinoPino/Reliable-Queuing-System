@@ -271,6 +271,7 @@ public class MessageDispatcher {
                 // set self as best candidate and broadcast nomination
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
                 networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
 
             }
         }

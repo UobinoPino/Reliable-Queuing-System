@@ -153,6 +153,8 @@ public class HeartbeatManager {
                         electionInfo.updateBestCandidate(brokerId, myLogLength);
                         networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
+                        electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, this);
+
                         // stop heartbeat monitor task
                         this.stop();
                     }
