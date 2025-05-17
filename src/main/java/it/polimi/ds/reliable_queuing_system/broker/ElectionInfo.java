@@ -94,6 +94,8 @@ public class ElectionInfo {
     }
 
     public void startNominationAckTimeouts(Set<Integer> peerIds, int myId, SharedState sharedState, NetworkManager networkManager, HeartbeatManager heartbeatManager) {
+        System.out.println("[DEBUG]: Starting nomination ACK timeouts for peers: " + peerIds);
+        System.out.println("[DEBUG]: Before there were " + nominationAckTimeoutFutures.size() + " nomination ACK timeouts");
         // start timeouts for ACKs from peers
         for (Integer peerId : peerIds) {
             if (peerId != myId) {
@@ -107,17 +109,21 @@ public class ElectionInfo {
                 nominationAckTimeoutFutures.put(peerId, future);
             }
         }
+        System.out.println("[DEBUG]: Now there are " + nominationAckTimeoutFutures.size() + " nomination ACK timeouts");
     }
 
     private void cancelNominationAckTimeouts() {
-        for (Future<?> timeout : nominationAckTimeoutFutures.values()) {
-            timeout.cancel(false);
-            nominationAckTimeoutFutures.remove(timeout.hashCode());
+        System.out.println("[DEBUG]: Cancelling " + nominationAckTimeoutFutures.size() + "nomination ACK timeouts");
+        for (Integer peerId : nominationAckTimeoutFutures.keySet()) {
+            nominationAckTimeoutFutures.get(peerId).cancel(false);
+            nominationAckTimeoutFutures.remove(peerId);
         }
     }
 
     /// Callback for nomination ack timeout expiration.
     private void onNominationAckTimeoutExpired(int myId, int peerId, SharedState sharedState, NetworkManager networkManager, HeartbeatManager heartbeatManager) {
+        System.out.println("[DEBUG]: Nomination Ack timeout expired for broker " + peerId);
+
         // remove Ack timeout
         nominationAckTimeoutFutures.remove(peerId).cancel(false);
 
@@ -130,7 +136,7 @@ public class ElectionInfo {
             // re-check received ACKs
             int activeBrokersCount = sharedState.getBrokersCount();
             int receivedAcksCount = receivedAcks.size();
-            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
 
             // if all ACKs have been received become new leader
             if (receivedAcksCount >= activeBrokersCount - 1) {

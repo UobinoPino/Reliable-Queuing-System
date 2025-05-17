@@ -240,11 +240,11 @@ public class MessageDispatcher {
 
         // If this is the first nomination received...
         if (electionInfo.wasntElectionInProgress()) {
-            // remove the leader from the list of known brokers
-            sharedState.removeBrokerAddress(sharedState.getLeaderId());
-
             // stop the heartbeat manager
             heartbeatManager.stop();
+
+            // remove the leader from the list of known brokers
+            sharedState.removeBrokerAddress(sharedState.getLeaderId());
 
             // compare your log with the received one
             int myLogLength = sharedState.getLogLength();
@@ -333,7 +333,7 @@ public class MessageDispatcher {
             int activeBrokersCount = sharedState.getBrokersCount();
 
 
-            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + activeBrokersCount);
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
 
             // if all ACKs have been received...
             if (receivedAcksCount >= activeBrokersCount - 1) {
