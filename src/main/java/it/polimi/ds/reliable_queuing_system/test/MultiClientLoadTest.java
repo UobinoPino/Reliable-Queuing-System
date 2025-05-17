@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class MultiClientLoadTest {
     private final Address brokerAddress;
+    private final int poolSize;
     private final int clientCount;
     private final int operationsPerClient;
     private final int threadsPerClient;
@@ -33,6 +34,7 @@ public class MultiClientLoadTest {
 
     public MultiClientLoadTest(
             Address brokerAddress,
+            int poolSize,
             int clientCount,
             int operationsPerClient,
             int threadsPerClient,
@@ -40,6 +42,7 @@ public class MultiClientLoadTest {
             String[] queueIds,
             boolean verboseLogging) {
         this.brokerAddress = brokerAddress;
+        this.poolSize = poolSize;
         this.clientCount = clientCount;
         this.operationsPerClient = operationsPerClient;
         this.threadsPerClient = threadsPerClient;
@@ -48,21 +51,14 @@ public class MultiClientLoadTest {
         this.verboseLogging = verboseLogging;
     }
 
-    public void runTest() throws InterruptedException {
+    public void runTest() throws InterruptedException, IOException {
         System.out.println("Starting multi-client load test with " + clientCount + " clients");
 
         // Create all client instances with unique IDs and ports
         for (int i = 0; i < clientCount; i++) {
-            String clientIp = obtainClientIp();
-            int clientPort = findAvailablePort();
-            Address clientAddress = new Address(clientIp, clientPort);
-
-            int clientId = ThreadLocalRandom.current().nextInt(10000, 100000);
 
             LoadTestClient client = new LoadTestClient(
-                    clientAddress,
                     brokerAddress,
-                    clientId,
                     operationsPerClient,
                     threadsPerClient,
                     360,       // max duration of the test in seconds
@@ -70,16 +66,61 @@ public class MultiClientLoadTest {
                     queueIds,
                     1,         // min value
                     1000,      // max value
-                    250,       // operation delay (200 mean 5 ops/sec per client)
+                    100,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
-                    100, // connection pool size
-                    100
+                    poolSize, // connection pool size
+                    500 // concurrent operations
             );
 
             clients.add(client);
-            System.out.println("Created client " + (i + 1) + " with ID: " + clientId);
+            System.out.println("Created client " + (i + 1));
+
+        }
+        // Registration phase: start listeners and request IDs for all clients
+        System.out.println("Starting registration phase for all clients...");
+        CountDownLatch registrationLatch = new CountDownLatch(clientCount);
+
+        for (LoadTestClient client : clients) {
+            // Start listener thread for each client
+            Thread listenerThread = new Thread(() -> {
+                try {
+                    // Start the client's listener
+                    client.startListener();
+
+                    // Request client ID
+                    client.requestClientId();
+
+                    // Wait for client ID with timeout
+                    boolean registered = client.waitForClientId(120000); // 60 second timeout
+                    if (registered) {
+                        System.out.println("Client registered with ID: " + client.getClientId());
+                    } else {
+                        System.err.println("Client registration timed out");
+                    }
+
+                    // Count down regardless of result (we're assuming eventual success)
+                    registrationLatch.countDown();
+                } catch (Exception e) {
+                    System.err.println("Error in client registration: " + e.getMessage());
+                    registrationLatch.countDown(); // Still count down to avoid deadlock
+                }
+            });
+
+            listenerThread.setDaemon(true);
+            listenerThread.start();
+
+            // Small delay between starting registration for each client
+            Thread.sleep(100);
         }
 
+        // Wait for all clients to complete registration
+        System.out.println("Waiting for all clients to register...");
+        registrationLatch.await();
+        System.out.println("All clients registered successfully. Starting test phase...");
+
+
+
+        // test phase
         CountDownLatch clientsCompletionLatch = new CountDownLatch(clientCount);
         ExecutorService executor = Executors.newFixedThreadPool(clientCount);
 
@@ -117,7 +158,7 @@ public class MultiClientLoadTest {
                 }
             });
             try {
-                Thread.sleep(500); // Start 2 clients per second
+                Thread.sleep(100); // Start 10 clients per second
             } catch (InterruptedException e) {
                 System.err.println("Startup sequence interrupted");
             }
@@ -199,6 +240,7 @@ public class MultiClientLoadTest {
 
             MultiClientLoadTest multiTest = new MultiClientLoadTest(
                     brokerAddress,
+                    poolSize,
                     clientCount,
                     operationsPerClient,
                     threadsPerClient,
