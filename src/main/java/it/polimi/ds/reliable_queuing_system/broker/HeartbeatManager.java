@@ -151,9 +151,10 @@ public class HeartbeatManager {
                         // start leader election by proposing self as candidate
                         int myLogLength = sharedState.getLogLength();
                         electionInfo.updateBestCandidate(brokerId, myLogLength);
+                        electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, this);
                         networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
 
-                        electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, this);
+
 
                         // stop heartbeat monitor task
                         this.stop();

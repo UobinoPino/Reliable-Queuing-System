@@ -8,6 +8,10 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 /// A class that will take care of handling messages received by the broker.
 public class MessageDispatcher {
     public MessageDispatcher(int brokerId, SharedState sharedState, HeartbeatManager heartbeatManager, LogManager logManager, NetworkManager networkManager, ElectionInfo electionInfo) {
@@ -36,6 +40,8 @@ public class MessageDispatcher {
     private final Queue<String> pendingRequestIds;
     private final Map<String, Message> pendingRequests;
     private final Queue<Message> delayedMessages;
+    private final ScheduledExecutorService batchProcessingExecutor = Executors.newSingleThreadScheduledExecutor();
+    private static final int BATCH_SIZE = 20; // Process only 20 messages at a time
 
     /// Dispatch the given [Message] to its dedicated handler method.
     public void dispatch(Message message) throws ClassNotFoundException {
@@ -269,8 +275,9 @@ public class MessageDispatcher {
                     electionInfo.updateBestCandidate(brokerId, myLogLength);
 
                     System.out.println("[INFO]: Previous best candidate was self, re-broadcasting nomination");
-                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                     electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
+                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
                 }
             }
             // else...
@@ -279,8 +286,9 @@ public class MessageDispatcher {
 
                 // set self as best candidate and broadcast nomination
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
-                networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
                 electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
+                networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+
 
             }
         }
@@ -308,8 +316,9 @@ public class MessageDispatcher {
 
                     // and if it was self, re-broadcast nomination
                     if (bestCandidateId == brokerId) {
-                        networkManager.broadcastMessage(new NewLeaderNomination(bestCandidateId, bestCandidateLogLength), brokerId, sharedState);
                         electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
+                        networkManager.broadcastMessage(new NewLeaderNomination(bestCandidateId, bestCandidateLogLength), brokerId, sharedState);
+
                     }
                 }
             }
@@ -385,26 +394,53 @@ public class MessageDispatcher {
     }
 
     private void resendPendingRequests() {
-        while (!pendingRequestIds.isEmpty()) {
+        // Schedule gradual processing of pending requests
+        if (!pendingRequestIds.isEmpty()) {
+            System.out.println("[INFO]: Scheduling processing of " + pendingRequestIds.size() + " pending requests in batches");
+            batchProcessingExecutor.schedule(this::processBatch, 250, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void processDelayedMessages() {
+        // This will be handled by the batch processing
+        System.out.println("[INFO]: Delayed messages (" + delayedMessages.size() + ") will be processed in batches");
+    }
+
+    private void processBatch() {
+        int processedCount = 0;
+        boolean hasMore = false;
+
+        // Process a batch of pending requests
+        while (!pendingRequestIds.isEmpty() && processedCount < BATCH_SIZE) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
 
             try {
                 dispatch(msg);
+                processedCount++;
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for pending id=" + id + ": " + e.getMessage());
             }
+            hasMore = !pendingRequestIds.isEmpty();
         }
-    }
 
-    private void processDelayedMessages() {
-        while (!delayedMessages.isEmpty()) {
+        // If batch size not reached and there are delayed messages, process some
+        while (!delayedMessages.isEmpty() && processedCount < BATCH_SIZE) {
             Message msg = delayedMessages.poll();
             try {
                 dispatch(msg);
+                processedCount++;
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for delayed msg=" + msg + ": " + e.getMessage());
             }
+            hasMore = hasMore || !delayedMessages.isEmpty();
+        }
+
+        // If more messages to process, schedule another batch after a delay
+        if (hasMore) {
+            System.out.println("[INFO]: Scheduled next batch of messages. Remaining pending: " +
+                              pendingRequestIds.size() + ", delayed: " + delayedMessages.size());
+            batchProcessingExecutor.schedule(this::processBatch, 500, TimeUnit.MILLISECONDS);
         }
     }
 }

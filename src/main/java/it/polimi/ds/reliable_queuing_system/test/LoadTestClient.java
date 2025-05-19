@@ -364,11 +364,11 @@ public class LoadTestClient {
     private void handleReadResponse(ReadResponse msg) {
         // Just logging for debugging if needed
 
-        if (verboseLogging) {
-            List<Integer> values = msg.values();
-            System.out.println("Read response received for operation " + msg.operationId() +
-                    ": " + (values.isEmpty() ? "no values" : values.size() + " values"));
-        }
+//        if (verboseLogging) {
+//            List<Integer> values = msg.values();
+//            System.out.println("Read response received for operation " + msg.operationId() +
+//                    ": " + (values.isEmpty() ? "no values" : values.size() + " values"));
+//        }
     }
 
     private void handleReadConfirmation(ReadConfirmation msg) {

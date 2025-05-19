@@ -65,15 +65,15 @@ public class MultiClientLoadTest {
                     clientId,
                     operationsPerClient,
                     threadsPerClient,
-                    360,       // max duration of the test in seconds
+                    240,       // max duration of the test in seconds
                     readWriteRatio,
                     queueIds,
                     1,         // min value
                     1000,      // max value
-                    250,       // operation delay (200 mean 5 ops/sec per client)
+                    500,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
-                    100, // connection pool size
-                    100
+                    200, // connection pool size
+                    200
             );
 
             clients.add(client);
