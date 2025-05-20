@@ -378,13 +378,13 @@ public class LoadTestClient {
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
-            System.out.println("Read confirmation received for operation " + msg.operationId() + " for client " + clientId);
+            System.out.println("Read confirmation received:  for client  " + clientId+ " for operationId= " + msg.operationId()   + " clientAddress="  +clientAddress);
             sendAck(msg.operationId());
 
 
-            if (verboseLogging) {
-                System.out.println("Read confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
-            }
+//            if (verboseLogging) {
+//                System.out.println("Read confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
+//            }
         }
     }
 
@@ -395,12 +395,12 @@ public class LoadTestClient {
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
-            System.out.println("Write response received for operation " + msg.operationId()+ " for client " + clientId);
+            System.out.println("Write response received received:  for client  " + clientId+ " for operationId= " + msg.operationId()   + " clientAddress="  +clientAddress);
             sendAck(msg.operationId());
 
-            if (verboseLogging) {
-                System.out.println("Write confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
-            }
+//            if (verboseLogging) {
+//                System.out.println("Write confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
+//            }
         }
     }
 

@@ -41,18 +41,39 @@ public class MessageDispatcher {
     private final Map<String, Message> pendingRequests;
     private final Queue<Message> delayedMessages;
     private final ScheduledExecutorService batchProcessingExecutor = Executors.newSingleThreadScheduledExecutor();
-    private static final int BATCH_SIZE = 10; // Process only 20 messages at a time
+    private static final int BATCH_SIZE = 50; // Process only 20 messages at a time
+    private volatile boolean batchProcessingActive = false;
+    private boolean skipDelay = false;
 
     /// Dispatch the given [Message] to its dedicated handler method.
     public void dispatch(Message message) throws ClassNotFoundException {
-        // if there is an election ongoing, ignore messages unrelated to the election,
-        // and store them so that they will be handled after the election
-        if (electionInfo.isElectionInProgress() && !isElectionRelated(message)) {
-            delayedMessages.add(message);
+
+        // Always process heartbeats and election messages immediately, regardless of batch status
+        if (message instanceof Heartbeat || message instanceof HeartbeatAck ||
+                isElectionRelated(message)) {
+
+            // Process critical system messages right away
+            switch (message) {
+                case Heartbeat msg -> handleHeartbeat(msg);
+                case HeartbeatAck msg -> handleHeartbeatAck(msg);
+                case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
+                case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
+                case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
+                default -> throw new ClassNotFoundException();
+            }
             return;
         }
 
-        // else, handle the message accordingly
+        // if there is an election ongoing, ignore messages unrelated to the election,
+        // and store them so that they will be handled after the election
+//
+        if ((batchProcessingActive || electionInfo.isElectionInProgress())
+                        && !isElectionRelated(message)&& !skipDelay) {
+                    delayedMessages.add(message);
+                   return;
+               }
+
+        // Regular message processing for non-critical messages
         switch (message) {
             case EntryPropagation msg -> handleEntryPropagation(msg);
             case EntryPropagationAck msg -> handleEntryPropagationAck(msg);
@@ -63,11 +84,6 @@ public class MessageDispatcher {
             case ClientOffsetsUpdateRequest msg -> handleGenericRequest(msg);
             case WriteRequest msg -> handleGenericRequest(msg);
             case BrokerRemoval msg -> handleBrokerRemoval(msg);
-            case Heartbeat msg -> handleHeartbeat(msg);
-            case HeartbeatAck msg -> handleHeartbeatAck(msg);
-            case NewLeaderNomination msg -> handleNewLeaderNomination(msg);
-            case NewLeaderNominationAck msg -> handleNewLeaderNominationAck(msg);
-            case NewLeaderAnnouncement msg -> handleNewLeaderAnnouncement(msg);
             case RequestCompletedAck msg -> handleRequestCompletedAck(msg);
             default -> throw new ClassNotFoundException();
         }
@@ -300,7 +316,7 @@ public class MessageDispatcher {
         }
         // else (an election was already in progress)...
         else {
-            System.out.println("[INFO]: Comparing log lengths - stored best ("+ electionInfo.getBestCandidate() +"): " + electionInfo.getBestCandidateLogLength() + ", candidate (" + msg.brokerId() + "): " + msg.logLength());
+            System.out.println("[INFO]: Comparing log lengths - stored best (" + electionInfo.getBestCandidate() + "): " + electionInfo.getBestCandidateLogLength() + ", candidate (" + msg.brokerId() + "): " + msg.logLength());
 
             // compared received log with the stored best one
             int bestCandidateId = electionInfo.getBestCandidate();
@@ -354,7 +370,7 @@ public class MessageDispatcher {
             int activeBrokersCount = sharedState.getBrokersCount();
 
 
-            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount - 1));
 
             // if all ACKs have been received...
             if (receivedAcksCount >= activeBrokersCount - 1) {
@@ -409,13 +425,15 @@ public class MessageDispatcher {
         pendingRequestIds.remove(id);
         pendingRequests.remove(id);
         System.out.println("[INFO]: Completed request " + id + " has been removed from pending requests");
+        System.out.println("[Segull]: Pending requests: " + pendingRequestIds.size() + ", delayed messages: " + delayedMessages.size());
+
     }
 
     private void resendPendingRequests() {
         // Schedule gradual processing of pending requests
         if (!pendingRequestIds.isEmpty()) {
             System.out.println("[INFO]: Scheduling processing of " + pendingRequestIds.size() + " pending requests in batches");
-            batchProcessingExecutor.schedule(this::processBatch, 250, TimeUnit.MILLISECONDS);
+            batchProcessingExecutor.schedule(this::processBatch, 1, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -425,19 +443,22 @@ public class MessageDispatcher {
     }
 
     private void processBatch() {
+        batchProcessingActive = true;
         int processedCount = 0;
         boolean hasMore = false;
-
-        // Process a batch of pending requests
+            // Process a batch of pending requests
         while (!pendingRequestIds.isEmpty() && processedCount < BATCH_SIZE) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
 
             try {
+                skipDelay = true;
                 dispatch(msg);
                 processedCount++;
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for pending id=" + id + ": " + e.getMessage());
+            } finally {
+                skipDelay = false;
             }
             hasMore = !pendingRequestIds.isEmpty();
         }
@@ -446,10 +467,13 @@ public class MessageDispatcher {
         while (!delayedMessages.isEmpty() && processedCount < BATCH_SIZE) {
             Message msg = delayedMessages.poll();
             try {
+                skipDelay = true;
                 dispatch(msg);
                 processedCount++;
             } catch (ClassNotFoundException e) {
                 System.out.println("[ERROR]: dispatch failed for delayed msg=" + msg + ": " + e.getMessage());
+            } finally {
+                skipDelay = false;
             }
             hasMore = hasMore || !delayedMessages.isEmpty();
         }
@@ -458,7 +482,11 @@ public class MessageDispatcher {
         if (hasMore) {
             System.out.println("[INFO]: Scheduled next batch of messages. Remaining pending: " +
                     pendingRequestIds.size() + ", delayed: " + delayedMessages.size());
-            batchProcessingExecutor.schedule(this::processBatch, 500, TimeUnit.MILLISECONDS);
+            batchProcessingExecutor.schedule(this::processBatch, 1, TimeUnit.MILLISECONDS);
+        } else {
+            System.out.println("[INFO]: All pending and delayed messages processed. Batch processing completed.");
+            batchProcessingActive = false;
         }
+
     }
-}
+    }
