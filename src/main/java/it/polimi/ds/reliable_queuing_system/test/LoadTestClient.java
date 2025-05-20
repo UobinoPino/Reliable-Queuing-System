@@ -18,6 +18,7 @@ public class LoadTestClient {
     private final Address brokerAddress;
     private Integer clientId;
     private final CountDownLatch clientIdLatch = new CountDownLatch(1);
+    private final CountDownLatch listenerReadyLatch = new CountDownLatch(1);
     private final AtomicInteger nextOperationId = new AtomicInteger(0);
     private final AtomicInteger successfulOperations = new AtomicInteger(0);
     private final AtomicInteger failedOperations = new AtomicInteger(0);
@@ -29,9 +30,11 @@ public class LoadTestClient {
     private final ConcurrentHashMap<String, AtomicInteger> queueWrites = new ConcurrentHashMap<>();
     private volatile boolean running = true;
     private final ExecutorService processingPool;
+    private final ServerSocket serverSocket;
+
 
     // Connection pool settings
-    private int maxPoolSize = 10;
+    private int maxPoolSize = 1000;
 
     private static final int CONNECTION_TIMEOUT = 30000;
     private static final int SOCKET_TIMEOUT = 30000;
@@ -49,9 +52,9 @@ public class LoadTestClient {
     private final boolean verboseLogging;
 
     public LoadTestClient(
-            Address clientAddress,
+         //   Address clientAddress,
             Address brokerAddress,
-            Integer clientId,
+          //  Integer clientId,
             int totalOperations,
             int concurrentThreads,
             long testTimeoutSeconds,
@@ -62,10 +65,9 @@ public class LoadTestClient {
             long operationDelayMs,
             boolean verboseLogging,
             int maxPoolSize,
-            int concurrentOperations) {
-        this.clientAddress = clientAddress;
+            int concurrentOperations) throws IOException {
+      //  this.clientAddress = clientAddress;
         this.brokerAddress = brokerAddress;
-        this.clientId = clientId;
         this.totalOperations = totalOperations;
         this.concurrentThreads = concurrentThreads;
         this.testTimeoutSeconds = testTimeoutSeconds;
@@ -81,9 +83,13 @@ public class LoadTestClient {
         this.concurrentOperations = concurrentOperations;
         this.processingPool = Executors.newFixedThreadPool(concurrentOperations);
 
+        this.serverSocket = new ServerSocket(0);
+        this.clientAddress = new Address(obtainClientIp(), serverSocket.getLocalPort());
+
         // Pre-populate queue writes tracker with all queue IDs
         for (String queueId : queueIds) {
             queueWrites.put(queueId, new AtomicInteger(0));
+
         }
     }
 
@@ -150,7 +156,7 @@ public class LoadTestClient {
             conn.close();
         }
     }
-    private void requestClientId() throws IOException, InterruptedException {
+    void requestClientId() throws IOException, InterruptedException {
         PooledConnection conn = getConnection();
         try {
             conn.outputStream.writeObject(new ClientIdRequest(clientAddress));
@@ -163,20 +169,38 @@ public class LoadTestClient {
         }
     }
 
-    public void startTest() throws InterruptedException, IOException {
-        System.out.println("Starting load test with configuration: " + getConfigString());
-
-        // Start message listener
+    // Start just the listener without requesting ID
+    public void startListener() {
         Thread listenerThread = new Thread(this::incomingMessagesListener);
         listenerThread.setDaemon(true);
         listenerThread.start();
 
-        // Wait for listener to start
-        Thread.sleep(500);
+        try {
+            listenerReadyLatch.await(); // Wait for listener to be ready
+        } catch (InterruptedException e) {
+            throw new RuntimeException("Interrupted while waiting for listener", e);
+        }
+    }
+    public boolean waitForClientId(long timeoutMs) {
+        try {
+            return clientIdLatch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    // Get the client ID
+    public Integer getClientId() {
+        return this.clientId;
+    }
+
+    public void startTest() throws InterruptedException, IOException {
+        System.out.println("Starting load test with configuration: " + getConfigString());
+
 
         long startTime = System.currentTimeMillis();
 
-        requestClientId();
 
         // Submit operations to the thread pool
         for (int i = 0; i < totalOperations; i++) {
@@ -224,15 +248,19 @@ public class LoadTestClient {
 
         // Wait for all operations to complete
         boolean completed = completionLatch.await(testTimeoutSeconds, TimeUnit.SECONDS);
+        if (!completed) {
+            System.err.println("WARNING: Load test did not complete within "
+                    + testTimeoutSeconds + " seconds.");
+        }
 
         // Test finished
         running = false;
         long endTime = System.currentTimeMillis();
         executorService.shutdownNow();
-
         try {
-               if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
+               if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
                         executorService.shutdownNow();
+                        System.err.println("Client " + (this.clientId != null ? this.clientId : "UNKNOWN") + ": Executor service did not terminate gracefully in 30s, forcing shutdown.");
                    }
                 } catch (InterruptedException ie) {
                     executorService.shutdownNow();
@@ -240,10 +268,15 @@ public class LoadTestClient {
                 }
         processingPool.shutdownNow();
         try {
-            if (!processingPool.awaitTermination(1, TimeUnit.SECONDS)) {
+            if (!processingPool.awaitTermination(30, TimeUnit.SECONDS)) {
+                System.err.println("Client " + (this.clientId != null ? this.clientId : "UNKNOWN") + ": Processing pool did not terminate gracefully in 30s, forcing shutdown.");
                 processingPool.shutdownNow();
+                if (!processingPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    System.err.println("Client " + (this.clientId != null ? this.clientId : "UNKNOWN") + ": Processing pool did not terminate after force.");
+                }
             }
         } catch (InterruptedException ignored) {
+            System.err.println("Client " + (this.clientId != null ? this.clientId : "UNKNOWN") + ": Interrupted while waiting for processing pool termination.");
             processingPool.shutdownNow();
             Thread.currentThread().interrupt();
         }
@@ -291,9 +324,9 @@ public class LoadTestClient {
     }
 
     private void incomingMessagesListener() {
-        try (ServerSocket serverSocket = new ServerSocket(clientAddress.port())) {
+        try (serverSocket ) {
             System.out.println("Load test client ready to receive messages at port: " + clientAddress.port());
-
+            listenerReadyLatch.countDown();
             while (running) {
                 try {
                     Socket socket = serverSocket.accept();
@@ -311,8 +344,10 @@ public class LoadTestClient {
     }
     private void handleClientIdAssignment(ClientIdAssignment msg) {
         this.clientId = msg.clientId();
-        clientIdLatch.countDown();
+
         System.out.println("Assigned client ID: " + clientId);
+
+        clientIdLatch.countDown();
         sendAck(-1);
     }
 
@@ -533,25 +568,25 @@ public class LoadTestClient {
             boolean verboseLogging = verboseInput.equalsIgnoreCase("y");
 
             // Create client address
-            String clientIp = obtainClientIp();
-            int clientPort = findAvailablePort();
-            Address clientAddress = new Address(clientIp, clientPort);
+//            String clientIp = obtainClientIp();
+//            int clientPort = findAvailablePort();
+//            Address clientAddress = new Address(clientIp, clientPort);
 
             // Use a random client ID
-            int clientId = ThreadLocalRandom.current().nextInt(10000, 100000);
+         //   int clientId = ThreadLocalRandom.current().nextInt(10000, 100000);
 
-            System.out.println("Client ID: " + clientId);
-            System.out.println("Client Address: " + clientAddress);
+         //   System.out.println("Client ID: " + clientId);
+       //     System.out.println("Client Address: " + clientAddress);
             System.out.println("Broker Address: " + brokerAddress);
 
             // Create and start load test with direct parameters
             LoadTestClient loadTestClient = new LoadTestClient(
-                    clientAddress,
+             //       clientAddress,
                     brokerAddress,
-                    clientId,
+                 //   clientId,
                     totalOperations,
                     concurrentThreads,
-                    180,  // max duration in seconds of the simulation
+                    360,  // max duration in seconds of the simulation
                     readWriteRatio,
                     queueIds,
                     1,    // min value
@@ -559,7 +594,7 @@ public class LoadTestClient {
                     250,   // operation delay ms
                     verboseLogging,
                     poolSize , // max pool size
-                    20 // concurrent operations
+                    200// concurrent operations
             );
 
             loadTestClient.startTest();
