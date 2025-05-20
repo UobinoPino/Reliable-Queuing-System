@@ -41,7 +41,7 @@ public class MessageDispatcher {
     private final Map<String, Message> pendingRequests;
     private final Queue<Message> delayedMessages;
     private final ScheduledExecutorService batchProcessingExecutor = Executors.newSingleThreadScheduledExecutor();
-    private static final int BATCH_SIZE = 20; // Process only 20 messages at a time
+    private static final int BATCH_SIZE = 10; // Process only 20 messages at a time
 
     /// Dispatch the given [Message] to its dedicated handler method.
     public void dispatch(Message message) throws ClassNotFoundException {
@@ -242,6 +242,12 @@ public class MessageDispatcher {
 
     /// Handler for received [NewLeaderNomination] messages.
     private void handleNewLeaderNomination(NewLeaderNomination msg) {
+        // avoid processing outdated nominations
+        if (msg.currentEpoch() < sharedState.getCurrentEpoch()) {
+            System.out.println("[INFO]: Ignoring outdated nomination from broker " + msg.brokerId());
+            return;
+        }
+
         System.out.println("[INFO]: Received leader nomination from broker " + msg.brokerId() + " with log length " + msg.logLength());
 
         // If this is the first nomination received...
@@ -268,7 +274,7 @@ public class MessageDispatcher {
 
                 // send ACK for the received nomination
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(sharedState.getCurrentEpoch(), brokerId), senderAddr);
                 if (!success) {
                     System.out.println("[INFO]: Restoring previous best candidate");
 
@@ -276,7 +282,7 @@ public class MessageDispatcher {
 
                     System.out.println("[INFO]: Previous best candidate was self, re-broadcasting nomination");
                     electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
-                    networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                    networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), brokerId, myLogLength), brokerId, sharedState);
 
                 }
             }
@@ -287,7 +293,7 @@ public class MessageDispatcher {
                 // set self as best candidate and broadcast nomination
                 electionInfo.updateBestCandidate(brokerId, myLogLength);
                 electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
-                networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), brokerId, myLogLength), brokerId, sharedState);
 
 
             }
@@ -308,7 +314,7 @@ public class MessageDispatcher {
                 electionInfo.updateBestCandidate(msg.brokerId(), msg.logLength());
 
                 Address senderAddr = sharedState.getBrokerAddress(msg.brokerId());
-                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(brokerId), senderAddr);
+                boolean success = networkManager.sendMessage(new NewLeaderNominationAck(sharedState.getCurrentEpoch(), brokerId), senderAddr);
                 if (!success) {
                     System.out.println("[INFO]: Restoring previous best candidate");
 
@@ -317,7 +323,7 @@ public class MessageDispatcher {
                     // and if it was self, re-broadcast nomination
                     if (bestCandidateId == brokerId) {
                         electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, heartbeatManager);
-                        networkManager.broadcastMessage(new NewLeaderNomination(bestCandidateId, bestCandidateLogLength), brokerId, sharedState);
+                        networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), bestCandidateId, bestCandidateLogLength), brokerId, sharedState);
 
                     }
                 }
@@ -331,6 +337,12 @@ public class MessageDispatcher {
 
     /// Handler for received [NewLeaderNominationAck] messages.
     private void handleNewLeaderNominationAck(NewLeaderNominationAck msg) {
+        // avoid processing outdated nomination ACKs
+        if (msg.currentEpoch() < sharedState.getCurrentEpoch()) {
+            System.out.println("[INFO]: Ignoring outdated nomination ACK from broker " + msg.senderId());
+            return;
+        }
+
         // if an election is in progress and I'm the best candidate...
         if (electionInfo.isElectionInProgress() && electionInfo.getBestCandidate() == brokerId) {
             // add the id of the sender to the set of received ACKs
@@ -353,7 +365,7 @@ public class MessageDispatcher {
 
                 // broadcast new leader announcement
                 List<LogEntry> completeLog = sharedState.getCompleteLog();
-                networkManager.broadcastMessage(new NewLeaderAnnouncement(brokerId, completeLog), brokerId, sharedState);
+                networkManager.broadcastMessage(new NewLeaderAnnouncement(sharedState.getCurrentEpoch(), brokerId, completeLog), brokerId, sharedState);
 
                 // terminate the election phase
                 electionInfo.stopElection();
@@ -367,6 +379,12 @@ public class MessageDispatcher {
 
     /// Handler for received [NewLeaderAnnouncement] messages.
     private void handleNewLeaderAnnouncement(NewLeaderAnnouncement msg) {
+        // avoid processing outdated announcements
+        if (msg.newEpoch() <= sharedState.getCurrentEpoch()) {
+            System.out.println("[INFO]: Ignoring outdated announcement from broker " + msg.brokerId());
+            return;
+        }
+
         if (electionInfo.isElectionInProgress()) {
             System.out.println("[INFO]: Received leader announcement from broker " + msg.brokerId());
 
@@ -439,7 +457,7 @@ public class MessageDispatcher {
         // If more messages to process, schedule another batch after a delay
         if (hasMore) {
             System.out.println("[INFO]: Scheduled next batch of messages. Remaining pending: " +
-                              pendingRequestIds.size() + ", delayed: " + delayedMessages.size());
+                    pendingRequestIds.size() + ", delayed: " + delayedMessages.size());
             batchProcessingExecutor.schedule(this::processBatch, 500, TimeUnit.MILLISECONDS);
         }
     }

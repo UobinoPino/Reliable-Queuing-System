@@ -11,8 +11,6 @@ import java.util.Arrays;
 import java.util.InputMismatchException;
 import java.util.Scanner;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Broker entry point. Uses a fixed thread‐pool to handle each incoming socket.
@@ -30,8 +28,7 @@ public class Broker {
     private static LogManager logManager;
     private static MessageDispatcher messageDispatcher;
 
-    private static final Lock brokerStateLock = new ReentrantLock();
-    private static BrokerState brokerState;
+    private static final CountDownLatch isBrokerReady = new CountDownLatch(1);
     public static final ElectionInfo electionInfo = new ElectionInfo();
 
     // pool for handling connections in parallel
@@ -40,20 +37,17 @@ public class Broker {
     private static void joinCluster() {
         boolean requestSent = false;
         while (!requestSent) {
-            synchronized (brokerStateLock) {
-                Address known = obtainKnownBrokerAddress();
-                try (Socket sock = new Socket()) {
-                    sock.connect(new InetSocketAddress(known.ip(), known.port()), NetworkManager.SOCKET_TIMEOUT);
-                    ObjectOutputStream out = new ObjectOutputStream(sock.getOutputStream());
-                    out.writeObject(new BrokerJoinRequest(brokerAddress));
-                    out.flush();
+            Address known = obtainKnownBrokerAddress();
+            try (Socket sock = new Socket()) {
+                sock.connect(new InetSocketAddress(known.ip(), known.port()), NetworkManager.SOCKET_TIMEOUT);
+                ObjectOutputStream out = new ObjectOutputStream(sock.getOutputStream());
+                out.writeObject(new BrokerJoinRequest(brokerAddress));
+                out.flush();
 
-                    brokerState = BrokerState.WAITING_JOIN;
-                    requestSent = true;
-                    System.out.println("[INFO]: Sent join request to " + known);
-                } catch (IOException e) {
-                    System.out.println("[ERROR]: Could not connect to broker at " + known + ". Try again.");
-                }
+                requestSent = true;
+                System.out.println("[INFO]: Sent join request to " + known);
+            } catch (IOException e) {
+                System.out.println("[ERROR]: Could not connect to broker at " + known + ". Try again.");
             }
         }
     }
@@ -68,15 +62,13 @@ public class Broker {
         try (ServerSocket serverSocket = new ServerSocket(brokerAddress.port())) {
             // first broker vs join logic unchanged
             if (Arrays.asList(args).contains("--first")) {
-                synchronized (brokerStateLock) {
-                    sharedState = new SharedState();
-                    brokerId = sharedState.getNewBrokerId();
-                    sharedState.addBrokerAddress(brokerId, brokerAddress);
-                    System.out.println("[INFO]: First broker " + brokerId + " on " + brokerAddress);
-                    sharedState.setNewLeaderId(brokerId);
-                    initializeManagers();
-                    brokerState = BrokerState.READY;
-                }
+                sharedState = new SharedState();
+                brokerId = sharedState.getNewBrokerId();
+                sharedState.addBrokerAddress(brokerId, brokerAddress);
+                System.out.println("[INFO]: First broker " + brokerId + " on " + brokerAddress);
+                sharedState.setNewLeaderId(brokerId);
+                initializeManagers();
+                isBrokerReady.countDown();
             } else {
                 joinCluster();
             }
@@ -101,27 +93,25 @@ public class Broker {
             while (!socket.isClosed()) {
                 Message msg = (Message) in.readObject();
 
-                synchronized (brokerStateLock) {
-                    if (brokerState == BrokerState.WAITING_JOIN) {
-                        if (msg instanceof BrokerJoinResponse resp) {
-                            brokerId = resp.newBrokerId();
-                            sharedState = resp.sharedState();
-                            sharedState.persistState();
-                            brokerState = BrokerState.READY;
-                            initializeManagers();
-                            System.out.println("[INFO]: Joined cluster as broker " + brokerId);
-                        } else {
-                            System.out.println("[INFO]: Ignoring pre-join message: " + msg);
-                        }
-                    } else {
-                        messageDispatcher.dispatch(msg);
-                    }
+                if (msg instanceof BrokerJoinResponse resp) {
+                    brokerId = resp.newBrokerId();
+                    sharedState = resp.sharedState();
+                    sharedState.persistState();
+                    initializeManagers();
+                    isBrokerReady.countDown();
+                    System.out.println("[INFO]: Joined cluster as broker " + brokerId);
+                } else {
+                    isBrokerReady.await();
+                    messageDispatcher.dispatch(msg);
                 }
             }
         } catch (ClassNotFoundException | ClassCastException e) {
             System.out.println("[INFO]: Unknown message received, it will be ignored.");
         } catch (IOException ignored) {
             // connection closed by peer. no need to do anything
+        } catch (InterruptedException e) {
+            System.out.println("[FATAL ERROR]: Broker interrupted while waiting for the cluster to be ready.");
+            System.exit(1);
         }
     }
 

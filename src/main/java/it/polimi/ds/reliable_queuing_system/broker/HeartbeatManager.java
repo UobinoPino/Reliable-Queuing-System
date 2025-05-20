@@ -152,7 +152,7 @@ public class HeartbeatManager {
                         int myLogLength = sharedState.getLogLength();
                         electionInfo.updateBestCandidate(brokerId, myLogLength);
                         electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, this);
-                        networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                        networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), brokerId, myLogLength), brokerId, sharedState);
 
 
 
@@ -212,6 +212,7 @@ public class HeartbeatManager {
                     sharedState.removeBrokerAddress(bId);
                     missedHeartbeats.remove(bId);
 
+                    // TODO: pretty sure it's useless, but I don't want to break everything
                     // If an election is in progress, update the active brokers list
                     if (electionInfo.isElectionInProgress()) {
                         // If the failed broker was the best candidate in the election, restart the election
@@ -222,7 +223,7 @@ public class HeartbeatManager {
                             // Start leader election by proposing self as candidate
                             int myLogLength = sharedState.getLogLength();
                             electionInfo.updateBestCandidate(brokerId, myLogLength);
-                            networkManager.broadcastMessage(new NewLeaderNomination(brokerId, myLogLength), brokerId, sharedState);
+                            networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), brokerId, myLogLength), brokerId, sharedState);
                         }
                     }
                 }

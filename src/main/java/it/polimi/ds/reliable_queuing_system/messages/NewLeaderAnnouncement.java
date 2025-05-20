@@ -7,6 +7,7 @@ import java.util.List;
 /// Message sent by a broker after all the expected [NewLeaderNominationAck] has been received
 /// to announce itself as the new leader.
 public record NewLeaderAnnouncement(
+        int newEpoch,
         int brokerId,
         List<LogEntry> newLeaderLog
 ) implements Message {

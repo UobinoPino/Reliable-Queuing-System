@@ -31,6 +31,7 @@ public class SharedState implements Serializable {
     private final AtomicInteger nextBrokerIdAvailable = new AtomicInteger(0);
     private final Map<Integer, Address> knownBrokers = new ConcurrentHashMap<>();
     private final AtomicInteger leaderId = new AtomicInteger();
+    private final AtomicInteger currentEpoch = new AtomicInteger(0);
     //endregion
 
     //region CLIENT-RELATED FIELDS
@@ -244,9 +245,10 @@ public class SharedState implements Serializable {
         return leaderId.get();
     }
 
-    /// Sets the id of the current leader broker to the given value.
+    /// Sets the id of the current leader broker to the given value, and increment the current epoch.
     public void setNewLeaderId(int leaderId) {
         this.leaderId.set(leaderId);
+        this.currentEpoch.incrementAndGet();
     }
 
     //endregion
@@ -297,6 +299,11 @@ public class SharedState implements Serializable {
     /// Returns 0 if no offset is found (so that the clients starts to read from the beginning).
     public int getClientOffset(int clientId, String queueName) {
         return getClientOffsets(clientId).getOrDefault(queueName, 0);
+    }
+
+    /// Returns the current system epoch.
+    public int getCurrentEpoch() {
+        return currentEpoch.get();
     }
 
     //endregion
