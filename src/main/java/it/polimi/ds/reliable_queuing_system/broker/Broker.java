@@ -35,7 +35,8 @@ public class Broker {
     public static final ElectionInfo electionInfo = new ElectionInfo();
 
     // pool for handling connections in parallel
-    private static final ExecutorService connectionPool = Executors.newFixedThreadPool(100);
+    private static final ExecutorService connectionPool = Executors.newCachedThreadPool();
+    private static final ExecutorService dispatchPool   = Executors.newCachedThreadPool();
 
     private static void joinCluster() {
         boolean requestSent = false;
@@ -114,7 +115,13 @@ public class Broker {
                             System.out.println("[INFO]: Ignoring pre-join message: " + msg);
                         }
                     } else {
-                        messageDispatcher.dispatch(msg);
+                        dispatchPool.submit(() -> {
+                            try {
+                                messageDispatcher.dispatch(msg);
+                            } catch (Exception e) {
+                                System.err.println("[ERROR]: dispatch failed: " + e.getMessage());
+                            }
+                        });
                     }
                 }
             }
@@ -130,9 +137,19 @@ public class Broker {
         try {
             if (!connectionPool.awaitTermination(5, TimeUnit.SECONDS)) {
                 connectionPool.shutdownNow();
+                System.out.println("[INFO]: Connection pool shutdown timed out. Forcefully shutting down.");
             }
         } catch (InterruptedException ignored) {
             connectionPool.shutdownNow();
+        }
+        dispatchPool.shutdown();
+        try {
+            if (!dispatchPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                dispatchPool.shutdownNow();
+                System.out.println("[INFO]: Dispatch pool shutdown timed out. Forcefully shutting down.");
+            }
+        } catch (InterruptedException ignored) {
+            dispatchPool.shutdownNow();
         }
         networkManager.shutdown(); // clean up pooled sockets
     }
