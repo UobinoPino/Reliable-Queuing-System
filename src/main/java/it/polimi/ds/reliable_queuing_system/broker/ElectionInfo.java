@@ -1,6 +1,7 @@
 package it.polimi.ds.reliable_queuing_system.broker;
 
 import it.polimi.ds.reliable_queuing_system.messages.NewLeaderAnnouncement;
+import it.polimi.ds.reliable_queuing_system.messages.NewLeaderNomination;
 import it.polimi.ds.reliable_queuing_system.utils.LogEntry;
 
 import java.util.List;
@@ -19,10 +20,8 @@ public class ElectionInfo {
     private final ConcurrentMap<Integer, Integer> ioFailureCounts = new ConcurrentHashMap<>();
     private final List<Runnable> postElectionCallbacks = new CopyOnWriteArrayList<>();
 
-//    private final ScheduledExecutorService nominationAckTimeoutExecutor = Executors.newScheduledThreadPool(10);
-//    private final ConcurrentMap<Integer, ScheduledFuture<?>> nominationAckTimeoutFutures = new ConcurrentHashMap<>();
-
     private final Map<Integer, CompletableFuture<Void>> nominationAckWaitingFutures = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> failedNominationAckTimeouts = new ConcurrentHashMap<>();
     private static final int NOMINATION_ACK_TIMEOUT_MS = 30000;
 
     /// Resets the election-related information as they were before starting the new leader election.
@@ -143,41 +142,79 @@ public class ElectionInfo {
     private void onNominationAckTimeoutExpired(int myId, int peerId, SharedState sharedState, NetworkManager networkManager, HeartbeatManager heartbeatManager) {
         System.out.println("[DEBUG]: Nomination Ack timeout expired for broker " + peerId);
 
-        CompletableFuture<Void> nominationAckWaitingFuture = nominationAckWaitingFutures.get(peerId);
-        if (nominationAckWaitingFuture != null) {
-            if (bestCandidate.get() == myId) {
-                System.out.println("[INFO]: No nomination Ack has been received from broker " + peerId + " before timeout expired. Will considering it as failed.");
+        int failedTimeouts = failedNominationAckTimeouts.getOrDefault(peerId, 0);
 
-                // remove failed broker
-                sharedState.removeBrokerAddress(peerId);
+        boolean considerFailed = false;
+        if (failedTimeouts < 3) {
+            System.out.println("[DEBUG]: Broker " + peerId + " failed to send nomination ACK. Will retry for the " + (failedTimeouts + 1) + " time.");
 
-                // re-check received ACKs
-                int activeBrokersCount = sharedState.getBrokersCount();
-                int receivedAcksCount = receivedAcks.size();
-                System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
+            failedNominationAckTimeouts.put(peerId, failedTimeouts + 1);
+            boolean success = networkManager.sendMessage(new NewLeaderNomination(myId, sharedState.getLogLength()), sharedState.getBrokerAddress(peerId));
 
-                // if all ACKs have been received become new leader
-                if (receivedAcksCount >= activeBrokersCount - 1) {
-                    System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
+            if (success) {
+                CompletableFuture<Void> future = new CompletableFuture<>();
+                nominationAckWaitingFutures.put(peerId, future);
+                future
+                        .orTimeout(NOMINATION_ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                        .exceptionally(ex -> {
+                            if (ex instanceof TimeoutException) {
+                                onNominationAckTimeoutExpired(
+                                        myId,
+                                        peerId,
+                                        sharedState,
+                                        networkManager,
+                                        heartbeatManager
+                                );
+                            }
+                            return null;
+                        });
+            }
+            else {
+                System.out.println("[DEBUG]: Failed to re-send nomination message to broker " + peerId + ". Will consider it as failed.");
+                considerFailed = true;
+            }
+        } else {
+            System.out.println("[DEBUG]: Broker " + peerId + " failed to send nomination ACK for the 3rd time. Will consider it as failed.");
+            considerFailed = true;
+        }
 
-                    // change leader
-                    sharedState.setNewLeaderId(myId);
+        if (considerFailed) {
+            CompletableFuture<Void> nominationAckWaitingFuture = nominationAckWaitingFutures.get(peerId);
+            if (nominationAckWaitingFuture != null) {
+                if (bestCandidate.get() == myId) {
+                    System.out.println("[INFO]: No nomination Ack has been received from broker " + peerId + " before timeout expired. Will considering it as failed.");
 
-                    // terminate the election phase
-                    stopElection();
-                    executePostElectionCallbacks();
+                    // remove failed broker
+                    sharedState.removeBrokerAddress(peerId);
 
-                    // restart the heartbeat manager
-                    heartbeatManager.restart();
+                    // re-check received ACKs
+                    int activeBrokersCount = sharedState.getBrokersCount();
+                    int receivedAcksCount = receivedAcks.size();
+                    System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
 
-                    // broadcast new leader announcement
-                    List<LogEntry> completeLog = sharedState.getCompleteLog();
-                    networkManager.broadcastMessage(new NewLeaderAnnouncement(myId, completeLog), myId, sharedState);
+                    // if all ACKs have been received become new leader
+                    if (receivedAcksCount >= activeBrokersCount - 1) {
+                        System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
+
+                        // change leader
+                        sharedState.setNewLeaderId(myId);
+
+                        // terminate the election phase
+                        stopElection();
+                        executePostElectionCallbacks();
+
+                        // restart the heartbeat manager
+                        heartbeatManager.restart();
+
+                        // broadcast new leader announcement
+                        List<LogEntry> completeLog = sharedState.getCompleteLog();
+                        networkManager.broadcastMessage(new NewLeaderAnnouncement(myId, completeLog), myId, sharedState);
+                    }
                 }
             }
-        }
-        else {
-            System.out.println("[DEBUG]: (fuck) No nomination Ack timeout was scheduled for broker " + peerId);
+            else {
+                System.out.println("[ERROR]: No nomination Ack timeout was scheduled for broker " + peerId);
+            }
         }
     }
 
