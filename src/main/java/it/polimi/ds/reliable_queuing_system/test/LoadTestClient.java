@@ -100,6 +100,7 @@ public class LoadTestClient {
         final Integer value;  // null for reads
         final int clientId;
         final Address clientAddress;
+        int retryCount = 0;
 
         OperationDetail(String type, String queueName, Integer value, int clientId, Address clientAddress) {
             this.startTime = System.currentTimeMillis();
@@ -192,6 +193,25 @@ public class LoadTestClient {
         return clientId;
     }
 
+//    private void handleOperationTimeout(int operationId) {
+//
+//        if (operationId == -1) {
+//            // Client ID request timeout
+//            System.out.println("[ERROR]: Client ID request timed out after " +
+//                              OPERATION_TIMEOUT_SECONDS + " seconds");
+//            clientIdRequestFailed = true;
+//            // Don't count down completionLatch for ID request
+//        } else {
+//
+//            OperationDetail detail = pendingOperations.remove(operationId);
+//            if (detail != null) {
+//                System.out.println("[ERROR]: Operation " + operationId + " timed out after " +
+//                                 OPERATION_TIMEOUT_SECONDS + " seconds");
+//                failedOperations.incrementAndGet();
+//                completionLatch.countDown();
+//            }
+//        }
+//    }
     private void handleOperationTimeout(int operationId) {
         if (operationId == -1) {
             // Client ID request timeout
@@ -200,13 +220,72 @@ public class LoadTestClient {
             clientIdRequestFailed = true;
             // Don't count down completionLatch for ID request
         } else {
-            OperationDetail detail = pendingOperations.remove(operationId);
+            // For read or write operations, try up to 3 times
+            OperationDetail detail = pendingOperations.get(operationId); // Don't remove yet
+
             if (detail != null) {
-                System.out.println("[ERROR]: Operation " + operationId + " timed out after " +
-                                 OPERATION_TIMEOUT_SECONDS + " seconds");
+                detail.retryCount++;
+
+                if (detail.retryCount <= 3) {
+                    System.out.println("[INFO]: Operation " + operationId + " timed out. Retry attempt " +
+                                      detail.retryCount + "/3");
+
+                    // Retry the operation
+                    try {
+                        retryOperation(operationId, detail);
+                        return; // Exit without marking as failed
+                    } catch (IOException e) {
+                        System.out.println("[ERROR]: Failed to retry operation " + operationId +
+                                          ": " + e.getMessage());
+                        // Continue to failure handling
+                    }
+                }
+
+                // After 3 retries or retry error, mark as failed
+                pendingOperations.remove(operationId);
+                System.out.println("[ERROR]: Operation " + operationId + " failed after " +
+                                 detail.retryCount + " attempts");
                 failedOperations.incrementAndGet();
                 completionLatch.countDown();
             }
+        }
+    }
+    private void retryOperation(int operationId, OperationDetail detail) throws IOException {
+        PooledConnection connection = null;
+        try {
+            connection = getConnection();
+
+            if ("read".equals(detail.type)) {
+                // Resend read request
+                connection.outputStream.writeObject(new ReadRequest(
+                    detail.queueName,
+                    clientId,
+                    operationId,
+                    clientAddress
+                ));
+            } else if ("write".equals(detail.type)) {
+                // Resend write request
+                connection.outputStream.writeObject(new WriteRequest(
+                    detail.queueName,
+                    detail.value,
+                    clientId,
+                    operationId,
+                    clientAddress
+                ));
+            }
+
+            connection.outputStream.reset();
+            connection.outputStream.flush();
+
+            // Restart the timeout for this operation
+            startOperationTimeout(operationId);
+
+            if (verboseLogging) {
+                System.out.println("Retrying " + detail.type + " operation " + operationId +
+                                  " for queue " + detail.queueName);
+            }
+        } finally {
+            returnConnection(connection);
         }
     }
 
@@ -423,6 +502,7 @@ public class LoadTestClient {
     private void handleReadConfirmation(ReadConfirmation msg) {
         OperationDetail detail  = pendingOperations.remove(msg.operationId());
         if (detail != null) {
+            cancelOperationTimeout(msg.operationId());
             long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
@@ -440,6 +520,7 @@ public class LoadTestClient {
     private void handleWriteResponse(WriteResponse msg) {
         OperationDetail detail= pendingOperations.remove(msg.operationId());
         if (detail != null) {
+            cancelOperationTimeout(msg.operationId());
             long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
@@ -497,7 +578,8 @@ public class LoadTestClient {
             connection.outputStream.reset(); // Reset object cache to prevent memory leaks
             connection.outputStream.flush();
 
-            pendingOperations.put(operationId, new OperationDetail("read", queueId, null, clientId, clientAddress));   ;
+            pendingOperations.put(operationId, new OperationDetail("read", queueId, null, clientId, clientAddress));
+            startOperationTimeout(operationId);;
 
             if (verboseLogging) {
                 System.out.println("Sent read request for queue " + queueId + " (operation " + operationId + ")");
@@ -519,6 +601,7 @@ public class LoadTestClient {
             connection.outputStream.flush();
 
             pendingOperations.put(operationId, new OperationDetail("write", queueId, value, clientId, clientAddress));
+            startOperationTimeout(operationId);
 
             if (verboseLogging) {
                 System.out.println("Sent write request with value " + value + " to queue " + queueId +
