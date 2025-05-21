@@ -433,7 +433,7 @@ public class MessageDispatcher {
         // Schedule gradual processing of pending requests
         if (!pendingRequestIds.isEmpty()) {
             System.out.println("[INFO]: Scheduling processing of " + pendingRequestIds.size() + " pending requests in batches");
-            batchProcessingExecutor.schedule(this::processBatch, 1, TimeUnit.MILLISECONDS);
+            batchProcessingExecutor.schedule(this::processBatch, 250, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -482,7 +482,7 @@ public class MessageDispatcher {
         if (hasMore) {
             System.out.println("[INFO]: Scheduled next batch of messages. Remaining pending: " +
                     pendingRequestIds.size() + ", delayed: " + delayedMessages.size());
-            batchProcessingExecutor.schedule(this::processBatch, 1, TimeUnit.MILLISECONDS);
+            batchProcessingExecutor.schedule(this::processBatch, 250, TimeUnit.MILLISECONDS);
         } else {
             System.out.println("[INFO]: All pending and delayed messages processed. Batch processing completed.");
             batchProcessingActive = false;

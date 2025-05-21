@@ -30,8 +30,14 @@ public class LoadTestClient {
     private volatile boolean running = true;
     private final ExecutorService processingPool;
 
+    // Timeout management
+    private final ScheduledExecutorService timeoutExecutor = Executors.newScheduledThreadPool(1);
+    private final ConcurrentHashMap<Integer, ScheduledFuture<?>> pendingTimeouts = new ConcurrentHashMap<>();
+    private static final int OPERATION_TIMEOUT_SECONDS = 60; // 1 minute timeout
+
     // Connection pool settings
     private int maxPoolSize = 10;
+    private volatile boolean clientIdRequestFailed = false;
 
     private static final int CONNECTION_TIMEOUT = 30000;
     private static final int SOCKET_TIMEOUT = 30000;
@@ -155,11 +161,52 @@ public class LoadTestClient {
         try {
             conn.outputStream.writeObject(new ClientIdRequest(clientAddress));
             conn.outputStream.flush();
+            // Start timeout for client ID request
+            startOperationTimeout(-1);
         } finally {
             returnConnection(conn);
         }
         if (!clientIdLatch.await(CONNECTION_TIMEOUT, TimeUnit.MILLISECONDS)) {
             throw new RuntimeException("Timed out waiting for client ID");
+        }
+    }
+    public boolean hasClientIdRequestFailed() {
+        return clientIdRequestFailed;
+    }
+    private void startOperationTimeout(int operationId) {
+        ScheduledFuture<?> timeoutFuture = timeoutExecutor.schedule(
+            () -> handleOperationTimeout(operationId),
+            OPERATION_TIMEOUT_SECONDS,
+            TimeUnit.SECONDS
+        );
+        pendingTimeouts.put(operationId, timeoutFuture);
+    }
+
+    private void cancelOperationTimeout(int operationId) {
+        ScheduledFuture<?> timeoutFuture = pendingTimeouts.remove(operationId);
+        if (timeoutFuture != null && !timeoutFuture.isDone()) {
+            timeoutFuture.cancel(true);
+        }
+    }
+    public Integer getClientId() {
+        return clientId;
+    }
+
+    private void handleOperationTimeout(int operationId) {
+        if (operationId == -1) {
+            // Client ID request timeout
+            System.out.println("[ERROR]: Client ID request timed out after " +
+                              OPERATION_TIMEOUT_SECONDS + " seconds");
+            clientIdRequestFailed = true;
+            // Don't count down completionLatch for ID request
+        } else {
+            OperationDetail detail = pendingOperations.remove(operationId);
+            if (detail != null) {
+                System.out.println("[ERROR]: Operation " + operationId + " timed out after " +
+                                 OPERATION_TIMEOUT_SECONDS + " seconds");
+                failedOperations.incrementAndGet();
+                completionLatch.countDown();
+            }
         }
     }
 
@@ -247,6 +294,7 @@ public class LoadTestClient {
             processingPool.shutdownNow();
             Thread.currentThread().interrupt();
         }
+        timeoutExecutor.shutdownNow();
         closeAllConnections();
 
         // Print results
@@ -313,6 +361,7 @@ public class LoadTestClient {
         this.clientId = msg.clientId();
         clientIdLatch.countDown();
         System.out.println("Assigned client ID: " + clientId);
+        cancelOperationTimeout(-1);
         sendAck(-1);
     }
 

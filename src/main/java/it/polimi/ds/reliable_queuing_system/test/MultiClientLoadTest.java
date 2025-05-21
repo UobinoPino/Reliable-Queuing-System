@@ -102,12 +102,14 @@ public class MultiClientLoadTest {
 
                     // Calculate and add this client's runtime
                     long clientRuntime = clientEndTime - clientStartTime;
-                    totalClientRuntime.addAndGet(clientRuntime);
-
-                    // Aggregate the results
-                    totalSuccessfulOperations.addAndGet(client.getSuccessfulOperations());
-                    totalFailedOperations.addAndGet(client.getFailedOperations());
-                    totalLatency.addAndGet(client.getTotalLatency());
+                    if (!client.hasClientIdRequestFailed()) {
+                        totalClientRuntime.addAndGet(clientRuntime);
+                        totalSuccessfulOperations.addAndGet(client.getSuccessfulOperations());
+                        totalFailedOperations.addAndGet(client.getFailedOperations());
+                        totalLatency.addAndGet(client.getTotalLatency());
+                    } else {
+                        System.out.println("Client " + client.getClientId() + " failed to acquire a client ID - excluding from statistics");
+                    }
                 } catch (InterruptedException e) {
                     System.err.println("Client test interrupted: " + e.getMessage());
                 } catch (Exception e) {
