@@ -45,7 +45,6 @@ public class LoadTestClient {
 
     // Direct config variables
     private final int totalOperations;
-    private final int concurrentThreads;
     private final int concurrentOperations;
     private final long testTimeoutSeconds;
     private final double readWriteRatio;
@@ -60,7 +59,6 @@ public class LoadTestClient {
             Address brokerAddress,
             Integer clientId,
             int totalOperations,
-            int concurrentThreads,
             long testTimeoutSeconds,
             double readWriteRatio,
             String[] queueIds,
@@ -74,7 +72,6 @@ public class LoadTestClient {
         this.brokerAddress = brokerAddress;
         this.clientId = clientId;
         this.totalOperations = totalOperations;
-        this.concurrentThreads = concurrentThreads;
         this.testTimeoutSeconds = testTimeoutSeconds;
         this.readWriteRatio = readWriteRatio;
         this.queueIds = queueIds;
@@ -84,7 +81,7 @@ public class LoadTestClient {
         this.verboseLogging = verboseLogging;
         this.maxPoolSize = maxPoolSize;
         this.completionLatch = new CountDownLatch(totalOperations);
-        this.executorService = Executors.newFixedThreadPool(concurrentThreads);
+        this.executorService = Executors.newFixedThreadPool(100);
         this.concurrentOperations = concurrentOperations;
         this.processingPool = Executors.newFixedThreadPool(concurrentOperations);
         this.incomingConnectionsPool = Executors.newFixedThreadPool(concurrentOperations);
@@ -399,7 +396,6 @@ public class LoadTestClient {
     private String getConfigString() {
         return "LoadTestConfig{" +
                 "totalOperations=" + totalOperations +
-                ", concurrentThreads=" + concurrentThreads +
                 ", testTimeoutSeconds=" + testTimeoutSeconds +
                 ", readWriteRatio=" + readWriteRatio +
                 ", queueIds=" + Arrays.toString(queueIds) +
@@ -631,17 +627,9 @@ public class LoadTestClient {
                     new Address("127.0.0.1", 5001) :
                     parseAddress(brokerInput);
 
-            System.out.print("Enter connection pool size per client [default: 10]: ");
-            String poolInput = scanner.nextLine().trim();
-            int poolSize = poolInput.isEmpty() ? 10 : Integer.parseInt(poolInput);
-
             System.out.print("Enter total number of operations [default: 1000]: ");
             String opsInput = scanner.nextLine().trim();
             int totalOperations = opsInput.isEmpty() ? 1000 : Integer.parseInt(opsInput);
-
-            System.out.print("Enter number of concurrent threads [default: 1]: ");
-            String threadsInput = scanner.nextLine().trim();
-            int concurrentThreads = threadsInput.isEmpty() ? 1 : Integer.parseInt(threadsInput);
 
             System.out.print("Enter read/write ratio (0-1, 0=all writes, 1=all reads) [default: 0.3]: ");
             String ratioInput = scanner.nextLine().trim();
@@ -675,7 +663,6 @@ public class LoadTestClient {
                     brokerAddress,
                     clientId,
                     totalOperations,
-                    concurrentThreads,
                     180,  // max duration in seconds of the simulation
                     readWriteRatio,
                     queueIds,
@@ -683,8 +670,8 @@ public class LoadTestClient {
                     1000, // max value
                     250,   // operation delay ms
                     verboseLogging,
-                    poolSize , // max pool size
-                    20 // concurrent operations
+                    200 , // max pool size
+                    200 // concurrent operations
             );
 
             loadTestClient.startTest();

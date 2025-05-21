@@ -21,7 +21,6 @@ public class MultiClientLoadTest {
     private final Address brokerAddress;
     private final int clientCount;
     private final int operationsPerClient;
-    private final int threadsPerClient;
     private final double readWriteRatio;
     private final String[] queueIds;
     private final boolean verboseLogging;
@@ -35,14 +34,12 @@ public class MultiClientLoadTest {
             Address brokerAddress,
             int clientCount,
             int operationsPerClient,
-            int threadsPerClient,
             double readWriteRatio,
             String[] queueIds,
             boolean verboseLogging) {
         this.brokerAddress = brokerAddress;
         this.clientCount = clientCount;
         this.operationsPerClient = operationsPerClient;
-        this.threadsPerClient = threadsPerClient;
         this.readWriteRatio = readWriteRatio;
         this.queueIds = queueIds;
         this.verboseLogging = verboseLogging;
@@ -64,7 +61,6 @@ public class MultiClientLoadTest {
                     brokerAddress,
                     clientId,
                     operationsPerClient,
-                    threadsPerClient,
                     360,       // max duration of the test in seconds
                     readWriteRatio,
                     queueIds,
@@ -169,9 +165,6 @@ public class MultiClientLoadTest {
                     new Address("127.0.0.1", 5001) :
                     parseAddress(brokerInput);
 
-            System.out.print("Enter connection pool size per client [default: 10]: ");
-            String poolInput = scanner.nextLine().trim();
-            int poolSize = poolInput.isEmpty() ? 10 : Integer.parseInt(poolInput);
 
             System.out.print("Enter number of clients [default: 10]: ");
             String clientsInput = scanner.nextLine().trim();
@@ -181,9 +174,6 @@ public class MultiClientLoadTest {
             String opsInput = scanner.nextLine().trim();
             int operationsPerClient = opsInput.isEmpty() ? 100 : Integer.parseInt(opsInput);
 
-            System.out.print("Enter threads per client [default: 1]: ");
-            String threadsInput = scanner.nextLine().trim();
-            int threadsPerClient = threadsInput.isEmpty() ? 1 : Integer.parseInt(threadsInput);
 
             System.out.print("Enter read/write ratio (0-1, 0=all writes, 1=all reads) [default: 0.3]: ");
             String ratioInput = scanner.nextLine().trim();
@@ -203,7 +193,6 @@ public class MultiClientLoadTest {
                     brokerAddress,
                     clientCount,
                     operationsPerClient,
-                    threadsPerClient,
                     readWriteRatio,
                     queueIds,
                     verboseLogging
