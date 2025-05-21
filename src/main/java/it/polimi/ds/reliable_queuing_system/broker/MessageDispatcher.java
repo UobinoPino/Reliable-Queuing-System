@@ -211,7 +211,7 @@ public class MessageDispatcher {
         }
 
         // send the ReadResponse to the client
-        networkManager.sendMessage(new ReadResponse(msg.clientId(), msg.operationId(), valuesToReturn), msg.clientAddress());
+        networkManager.sendMessage(new ReadResponse(msg.clientId(), msg.operationId(), msg.queueName(), valuesToReturn), msg.clientAddress());
 
         // create a new ClientOffsetUpdate message and handle it accordingly
         ClientOffsetsUpdateRequest offsetsUpdateMsg = new ClientOffsetsUpdateRequest(msg.queueName(), requestedQueue.size(), msg.clientId(), msg.operationId(), msg.clientAddress());

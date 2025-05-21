@@ -8,6 +8,7 @@ import java.util.List;
 public record ReadResponse(
         int clientId,
         int operationId,
+        String queueName,
         List<Integer> values
 ) implements Message {
 }
