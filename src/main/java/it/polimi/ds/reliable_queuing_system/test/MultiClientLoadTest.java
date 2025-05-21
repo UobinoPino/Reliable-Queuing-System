@@ -65,7 +65,7 @@ public class MultiClientLoadTest {
                     clientId,
                     operationsPerClient,
                     threadsPerClient,
-                    180,       // max duration of the test in seconds
+                    360,       // max duration of the test in seconds
                     readWriteRatio,
                     queueIds,
                     1,         // min value

@@ -34,13 +34,14 @@ public class LoadTestClient {
     private final ScheduledExecutorService timeoutExecutor = Executors.newScheduledThreadPool(1);
     private final ConcurrentHashMap<Integer, ScheduledFuture<?>> pendingTimeouts = new ConcurrentHashMap<>();
     private static final int OPERATION_TIMEOUT_SECONDS = 60; // 1 minute timeout
+    private final ExecutorService incomingConnectionsPool;
 
     // Connection pool settings
     private int maxPoolSize = 10;
     private volatile boolean clientIdRequestFailed = false;
 
-    private static final int CONNECTION_TIMEOUT = 30000;
-    private static final int SOCKET_TIMEOUT = 30000;
+    private static final int CONNECTION_TIMEOUT = 60000;
+    private static final int SOCKET_TIMEOUT = 60000;
 
     // Direct config variables
     private final int totalOperations;
@@ -86,6 +87,7 @@ public class LoadTestClient {
         this.executorService = Executors.newFixedThreadPool(concurrentThreads);
         this.concurrentOperations = concurrentOperations;
         this.processingPool = Executors.newFixedThreadPool(concurrentOperations);
+        this.incomingConnectionsPool = Executors.newFixedThreadPool(concurrentOperations);
 
         // Pre-populate queue writes tracker with all queue IDs
         for (String queueId : queueIds) {
@@ -193,25 +195,6 @@ public class LoadTestClient {
         return clientId;
     }
 
-//    private void handleOperationTimeout(int operationId) {
-//
-//        if (operationId == -1) {
-//            // Client ID request timeout
-//            System.out.println("[ERROR]: Client ID request timed out after " +
-//                              OPERATION_TIMEOUT_SECONDS + " seconds");
-//            clientIdRequestFailed = true;
-//            // Don't count down completionLatch for ID request
-//        } else {
-//
-//            OperationDetail detail = pendingOperations.remove(operationId);
-//            if (detail != null) {
-//                System.out.println("[ERROR]: Operation " + operationId + " timed out after " +
-//                                 OPERATION_TIMEOUT_SECONDS + " seconds");
-//                failedOperations.incrementAndGet();
-//                completionLatch.countDown();
-//            }
-//        }
-//    }
     private void handleOperationTimeout(int operationId) {
         if (operationId == -1) {
             // Client ID request timeout
@@ -228,7 +211,7 @@ public class LoadTestClient {
 
                 if (detail.retryCount <= 3) {
                     System.out.println("[INFO]: Operation " + operationId + " timed out. Retry attempt " +
-                                      detail.retryCount + "/3");
+                                      detail.retryCount + "/3" + "for client " + clientId +  "clientAddress="  +clientAddress);
 
                     // Retry the operation
                     try {
@@ -282,7 +265,7 @@ public class LoadTestClient {
 
             if (verboseLogging) {
                 System.out.println("Retrying " + detail.type + " operation " + operationId +
-                                  " for queue " + detail.queueName);
+                                  " for queue " + detail.queueName + "for client " + clientId +  " at address " + clientAddress);
             }
         } finally {
             returnConnection(connection);
@@ -373,6 +356,16 @@ public class LoadTestClient {
             processingPool.shutdownNow();
             Thread.currentThread().interrupt();
         }
+        // Add this after shutting down other executors
+        incomingConnectionsPool.shutdownNow();
+        try {
+            if (!incomingConnectionsPool.awaitTermination(1, TimeUnit.SECONDS)) {
+                incomingConnectionsPool.shutdownNow();
+            }
+        } catch (InterruptedException ignored) {
+            incomingConnectionsPool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         timeoutExecutor.shutdownNow();
         closeAllConnections();
 
@@ -425,7 +418,7 @@ public class LoadTestClient {
                 try {
                     Socket socket = serverSocket.accept();
                     socket.setSoTimeout(SOCKET_TIMEOUT);
-                    CompletableFuture.runAsync(() -> handleIncomingConnection(socket));
+                    incomingConnectionsPool.submit(() -> handleIncomingConnection(socket));
                 } catch (IOException e) {
                     if (running) {
                         System.err.println("Error accepting connection: " + e.getMessage());
