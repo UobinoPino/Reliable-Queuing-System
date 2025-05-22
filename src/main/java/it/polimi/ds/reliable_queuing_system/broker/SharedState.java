@@ -246,7 +246,7 @@ public class SharedState implements Serializable {
     }
 
     /// Sets the id of the current leader broker to the given value, and increment the current epoch.
-    public void setNewLeaderId(int leaderId) {
+    public synchronized void setNewLeaderId(int leaderId) {
         this.leaderId.set(leaderId);
         this.currentEpoch.incrementAndGet();
     }
@@ -258,7 +258,7 @@ public class SharedState implements Serializable {
 
     /// Returns the ID corresponding to the given client address
     /// (or a new one if it's the first connection from a client with this address)
-    public int getClientId(Address clientAddress) {
+    public synchronized int getClientId(Address clientAddress) {
         Integer clientId = clientAddressMap.get(clientAddress);
         if (clientId == null) {
             clientId = nextClientIdAvailable.getAndIncrement();
@@ -278,7 +278,7 @@ public class SharedState implements Serializable {
     }
 
     /// Adds an item to the queue identified by queueName.
-    public void addToQueue(String queueName, int item) {
+    public synchronized void addToQueue(String queueName, int item) {
         getQueue(queueName).add(item);
         persistQueues();
     }
@@ -290,7 +290,7 @@ public class SharedState implements Serializable {
     }
 
     /// Updates the offset for a specific client and queue.
-    public void updateClientOffset(int clientId, String queueName, int newOffset) {
+    public synchronized void updateClientOffset(int clientId, String queueName, int newOffset) {
         getClientOffsets(clientId).put(queueName, newOffset);
         persistClientOffsets();
     }
@@ -328,7 +328,7 @@ public class SharedState implements Serializable {
 
     /// Tries to permanently add the given [LogEntry] to the log,
     /// and returns if the operation has been successful or not.
-    public boolean commitEntry(LogEntry logEntry) {
+    public synchronized boolean commitEntry(LogEntry logEntry) {
         // remove the given entry from the waiting list it's currently in (if any)
         int waitingAckPos = waitingAckEntries.indexOf(logEntry);
         int waitingCommitPos = waitingCommitEntries.indexOf(logEntry);
@@ -377,7 +377,7 @@ public class SharedState implements Serializable {
     }
 
     /// Replace the current log with the given one.
-    public void replaceLog(List<LogEntry> newLog) {
+    public synchronized void replaceLog(List<LogEntry> newLog) {
         log.clear();
         log.addAll(newLog);
         System.out.println("[INFO]: Log replaced with leader's log containing " + newLog.size() + " entries");

@@ -7,6 +7,7 @@ public record ReadRequest(
         String queueName,
         int clientId,
         int operationId,
-        Address clientAddress
+        Address clientAddress,
+        Address contactedBrokerAddress
 ) implements Message {
 }

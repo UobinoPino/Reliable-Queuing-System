@@ -51,6 +51,7 @@ public class Broker {
             }
         }
     }
+
     public static void main(String[] args) {
         System.out.println("======== RELIABLE QUEUING SYSTEM: BROKER ========");
 
@@ -86,6 +87,7 @@ public class Broker {
         }
     }
 
+    /// Runnable to be executed inside the connection pool that will listen for incoming messages from the given socket.
     private static void handleConnection(Socket socket) {
         try (Socket s = socket;
              ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
@@ -190,7 +192,7 @@ public class Broker {
     /// Create an instance for each one of the Manager classes used by the Broker.
     private static void initializeManagers() {
         networkManager = new NetworkManager(electionInfo);
-        logManager = new LogManager(brokerId, sharedState, networkManager);
+        logManager = new LogManager(brokerId, brokerAddress, sharedState, networkManager);
         heartbeatManager = new HeartbeatManager(brokerId, sharedState, electionInfo, networkManager,logManager);
         messageDispatcher = new MessageDispatcher(
                 brokerId,

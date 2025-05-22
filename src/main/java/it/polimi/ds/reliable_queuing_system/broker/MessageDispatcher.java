@@ -66,7 +66,6 @@ public class MessageDispatcher {
 
         // if there is an election ongoing, ignore messages unrelated to the election,
         // and store them so that they will be handled after the election
-//
         if ((batchProcessingActive || electionInfo.isElectionInProgress())
                         && !isElectionRelated(message)&& !skipDelay) {
                     delayedMessages.add(message);
@@ -80,8 +79,7 @@ public class MessageDispatcher {
             case EntryCommit msg -> handleEntryCommit(msg);
             case BrokerJoinRequest msg -> handleGenericRequest(msg);
             case ClientIdRequest msg -> handleGenericRequest(msg);
-            case ReadRequest msg -> handleReadRequest(msg);
-            case ClientOffsetsUpdateRequest msg -> handleGenericRequest(msg);
+            case ReadRequest msg -> handleGenericRequest(msg);
             case WriteRequest msg -> handleGenericRequest(msg);
             case BrokerRemoval msg -> handleBrokerRemoval(msg);
             case RequestCompletedAck msg -> handleRequestCompletedAck(msg);
@@ -130,11 +128,13 @@ public class MessageDispatcher {
             if(sharedState.isEntryWaitingAck(msg.logEntry())) {
                 System.out.println("[INFO]: Received propagation ACK for waiting log entry " + msg.logEntry() + ". Adding it to the log...");
 
-                // broadcast the EntryCommit message
-                networkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
-
                 // commit the entry locally
-                logManager.commitEntry(msg.logEntry());
+                boolean committed = logManager.commitEntry(msg.logEntry());
+
+                // broadcast the EntryCommit message if actually committed
+                if (committed) {
+                    networkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
+                }
             }
         }
     }
@@ -172,7 +172,7 @@ public class MessageDispatcher {
             if (!(msg instanceof BrokerJoinRequest)) {
                 switch (msg) {
                     case ClientIdRequest req -> id = req.clientAddress() + ":" + "-1";
-                    case ClientOffsetsUpdateRequest req -> id = req.clientAddress() + ":" + req.operationId();
+                    case ReadRequest req -> id = req.clientAddress() + ":" + req.operationId();
                     case WriteRequest req -> id = req.clientAddress() + ":" + req.operationId();
                     default -> throw new RuntimeException("Unexpected message type treated as Generic Request");
                 }
@@ -194,28 +194,6 @@ public class MessageDispatcher {
                 delayedMessages.add(msg);
             }
         }
-    }
-
-    /// Handler for received [ReadRequest] messages.
-    private void handleReadRequest(ReadRequest msg) {
-        System.out.println("[INFO]: Received read request " + msg);
-
-        // retrieve the values to be returned to the client
-        List<Integer> valuesToReturn = new ArrayList<>();
-        List<Integer> requestedQueue = sharedState.getQueue(msg.queueName());
-        if(!requestedQueue.isEmpty()) {
-            int clientOffset = sharedState.getClientOffset(msg.clientId(), msg.queueName());
-            if (clientOffset < requestedQueue.size()) {
-                valuesToReturn.addAll(requestedQueue.subList(clientOffset, requestedQueue.size()));
-            }
-        }
-
-        // send the ReadResponse to the client
-        networkManager.sendMessage(new ReadResponse(msg.clientId(), msg.operationId(), msg.queueName(), valuesToReturn), msg.clientAddress());
-
-        // create a new ClientOffsetUpdate message and handle it accordingly
-        ClientOffsetsUpdateRequest offsetsUpdateMsg = new ClientOffsetsUpdateRequest(msg.queueName(), requestedQueue.size(), msg.clientId(), msg.operationId(), msg.clientAddress());
-        handleGenericRequest(offsetsUpdateMsg);
     }
 
     /// Handler for received [BrokerRemoval] messages.

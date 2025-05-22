@@ -9,6 +9,7 @@ public record WriteRequest(
         int value,
         int clientId,
         int operationId,
-        Address clientAddress
+        Address clientAddress,
+        Address contactedBrokerAddress
 ) implements Message {
 }

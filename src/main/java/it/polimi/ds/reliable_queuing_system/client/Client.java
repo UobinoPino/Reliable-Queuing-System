@@ -30,7 +30,6 @@ public class Client {
     private static Integer nextOperationId = 0;
 
     private static final Lock clientStateLock = new ReentrantLock();
-    private static List<Integer> pendingReadValues;
     private static ClientState clientState = ClientState.READY;
 
     private static final CountDownLatch isIncomingMessagesListenerReady = new CountDownLatch(1);
@@ -206,7 +205,6 @@ public class Client {
                 switch (message) {
                     case ClientIdAssignment msg -> handleClientIdAssignment(msg);
                     case ReadResponse msg -> handleReadResponse(msg);
-                    case ReadConfirmation msg -> handleReadConfirmation(msg);
                     case WriteResponse msg -> handleWriteResponse(msg);
                     default -> throw new ClassNotFoundException();
                 }
@@ -245,24 +243,11 @@ public class Client {
     private static void handleReadResponse(ReadResponse msg) {
         synchronized (clientStateLock) {
             if (clientState == ClientState.WAITING_READ) {
-                System.out.println("[INFO]: Read response received. Waiting for confirmation message.");
-
-                pendingReadValues = msg.values();
-            } else {
-                System.out.println("[INFO]: Unexpected ReadResponse message received.");
-            }
-        }
-    }
-
-    private static void handleReadConfirmation(ReadConfirmation msg) {
-        synchronized (clientStateLock) {
-            if (pendingReadValues != null && clientState == ClientState.WAITING_READ) {
-                if (pendingReadValues.isEmpty()) {
+                if (msg.values().isEmpty()) {
                     System.out.println("No new values has been added to queue since last reading.");
                 } else {
-                    System.out.println("New values in queue have been found: " + pendingReadValues);
+                    System.out.println("New values in queue have been found: " + msg.values());
                 }
-                pendingReadValues = null;
                 clientState = ClientState.READY;
                 cancelWaitingTimeout();
 
@@ -270,10 +255,10 @@ public class Client {
                     currentOutStream.writeObject(new RequestCompletedAck(clientAddress, msg.operationId()));
                     currentOutStream.flush();
                 } catch (IOException | NullPointerException ignored) {
-                    // peer crashed but client already received the read confirmation, so no need to do anything
+                    // peer crashed but client already received the read response, so no need to do anything
                 }
             } else {
-                System.out.println("[INFO]: Unexpected ReadConfirmation message received.");
+                System.out.println("[INFO]: Unexpected ReadResponse message received.");
             }
         }
     }
@@ -326,7 +311,7 @@ public class Client {
                 }
 
                 try {
-                    Message sentMessage = new ClientIdRequest(clientAddress);
+                    Message sentMessage = new ClientIdRequest(clientAddress, brokerAddress);
                     currentOutStream.writeObject(sentMessage);
                     currentOutStream.flush();
                     clientState = ClientState.WAITING_ID;
@@ -353,7 +338,7 @@ public class Client {
             }
 
             try {
-                Message sentMessage = new ReadRequest(queueId, clientId, nextOperationId++, clientAddress);
+                Message sentMessage = new ReadRequest(queueId, clientId, nextOperationId++, clientAddress, brokerAddress);
                 currentOutStream.writeObject(sentMessage);
                 currentOutStream.flush();
 
@@ -390,7 +375,7 @@ public class Client {
             }
 
             try {
-                Message sentMessage = new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress);
+                Message sentMessage = new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress, brokerAddress);
                 currentOutStream.writeObject(sentMessage);
                 currentOutStream.flush();
 

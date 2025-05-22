@@ -8,8 +8,6 @@ import java.util.concurrent.*;
 
 /// A class that will take care of the heartbeat mechanism to detect eventual crashes of other brokers.
 public class HeartbeatManager {
-
-
     public HeartbeatManager(int brokerId, SharedState sharedState, ElectionInfo electionInfo, NetworkManager networkManager, LogManager logManager) {
         this.brokerId = brokerId;
         this.sharedState = sharedState;
@@ -23,8 +21,6 @@ public class HeartbeatManager {
         this.lastHeartbeats = new ConcurrentHashMap<>();
         this.missedHeartbeats = new ConcurrentHashMap<>();
 
-
-
         // start the heartbeat sender/monitor thread
         restart();
     }
@@ -36,7 +32,7 @@ public class HeartbeatManager {
     public static final long HEARTBEAT_TIMEOUT_MS = 10000;
 
     /// Maximum number of heartbeats that a follower can miss before being considered as crashed.
-    public static final int MISSABLE_HEARTBEATS = 3;
+    public static final int MISSABLE_HEARTBEATS = 2;
 
     private final int brokerId;
     private final SharedState sharedState;
@@ -50,10 +46,7 @@ public class HeartbeatManager {
     private final NetworkManager networkManager;
      private final LogManager logManager;
 
-
-    /**
-     * Offload sending HeartbeatAck to dedicated executor
-     */
+    /// Offload sending HeartbeatAck to dedicated executor
     public void sendAck(int followerId) {
         ackExecutor.submit(() ->
                 networkManager.forwardMessageToLeader(new HeartbeatAck(followerId), sharedState)
@@ -135,14 +128,6 @@ public class HeartbeatManager {
                         for (LogEntry entry : waitingEntries) {
                             // Commit each entry locally
                             logManager.commitEntry(entry);
-
-                            // Send confirmation to client for each waiting log entry manually
-                            Message msg = entry.message();
-                            if (msg instanceof ClientOffsetsUpdateRequest req) {
-                                networkManager.sendMessage(new ReadConfirmation(req.operationId()), req.clientAddress());
-                            } else if (msg instanceof WriteRequest req) {
-                                networkManager.sendMessage(new WriteResponse(req.operationId()), req.clientAddress());
-                            }
                         }
                     }
 
@@ -153,8 +138,6 @@ public class HeartbeatManager {
                         electionInfo.updateBestCandidate(brokerId, myLogLength);
                         electionInfo.startNominationAckTimeouts(sharedState.getBrokerAddresses().keySet(), brokerId, sharedState, networkManager, this);
                         networkManager.broadcastMessage(new NewLeaderNomination(sharedState.getCurrentEpoch(), brokerId, myLogLength), brokerId, sharedState);
-
-
 
                         // stop heartbeat monitor task
                         this.stop();

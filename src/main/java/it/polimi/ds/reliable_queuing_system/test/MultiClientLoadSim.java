@@ -28,10 +28,15 @@ public class MultiClientLoadSim {
                 new Address("127.0.0.1", 5001) :
                 parseAddress(brokerInput);
 
-        System.out.print("Enter the number of clients to simulate concurrently [default: 100]: ");
+        // if loopback address has been specified as broker address, replace it with the actual IP address of the machine
+        if (brokerAddress.ip().equals("127.0.0.1")) {
+            brokerAddress = new Address(obtainClientIp(), brokerAddress.port());
+        }
+
+        System.out.print("Enter the number of clients to simulate concurrently [default: 10]: ");
         String clientsNumInput = scanner.nextLine().trim();
         int clientsNum = clientsNumInput.isEmpty() ?
-                100 :
+                10 :
                 Integer.parseInt(clientsNumInput);
 
         System.out.print("Enter the total number of operations each client should perform [default: 100]: ");
@@ -40,10 +45,10 @@ public class MultiClientLoadSim {
                 100 :
                 Integer.parseInt(totalOperationsInput);
 
-        System.out.print("Enter read/write ratio [default: 0.3]: ");
+        System.out.print("Enter read/write ratio [default: 0.5]: ");
         String readWriteRatioInput = scanner.nextLine().trim();
         double readWriteRatio = readWriteRatioInput.isEmpty() ?
-                0.3 :
+                0.5 :
                 Double.parseDouble(readWriteRatioInput);
 
         System.out.print("Enter queue name prefix [default: queue]: ");
@@ -61,7 +66,8 @@ public class MultiClientLoadSim {
         List<LoadSimResults> results = new ArrayList<>();
         for (int i = 0; i < clientsNum; i++) {
             int clientNum = i;
-            Future<LoadSimResults> simResultsFuture = clientsSimExecutor.submit(() -> startClientSim(clientNum, brokerAddress, totalOperations, readWriteRatio, queueNamePrefix, queuesNum));
+            Address brokerAddr = brokerAddress;
+            Future<LoadSimResults> simResultsFuture = clientsSimExecutor.submit(() -> startClientSim(clientNum, brokerAddr, totalOperations, readWriteRatio, queueNamePrefix, queuesNum));
             results.add(simResultsFuture.get());
         }
 

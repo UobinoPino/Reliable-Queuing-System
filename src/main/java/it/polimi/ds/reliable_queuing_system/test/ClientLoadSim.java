@@ -16,42 +16,51 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class ClientLoadSim {
+    //region PASSED PARAMETERS
     private final Address clientAddress;
     private final Address brokerAddress;
-    private Integer clientId;
-
-    private final AtomicInteger nextOperationId;
-    private CountDownLatch sentOperationCompletedLatch;
-    private CompletableFuture<Object> sentOperationTimeout;
-
-    private final ExecutorService incomingSocketsExecutor;
-    private final ExecutorService incomingMessagesExecutor;
-    private CountDownLatch incomingMessageListenerReadyLatch;
-    private Socket outSocket;
-    private ObjectOutputStream outStream;
-    private final AtomicBoolean checksStarted;
-    private final AtomicBoolean simCompleted;
-
     private final int totalOperations;
     private final double readWriteRatio;
     private final String[] queueNames;
+    //endregion
+
+    //region SIMULATION-RELATED PARAMETERS
+    private Integer clientId;
     private final List<Integer> completedOperations;
     private final List<Integer> failedOperations;
-
-    private final AtomicLong startTime;
-    private final AtomicLong endTime;
-
+    private final AtomicInteger nextOperationId;
     private final Map<String, List<Integer>> writtenQueues;
     private final Map<Integer, String> readQueueNames;
     private final Map<Integer, List<Integer>> expectedValues;
     private final Map<Integer, List<Integer>> readValues;
-    private CountDownLatch readValuesObtainedLatch;
 
+    private final AtomicLong startTime;
+    private final AtomicLong endTime;
+    //endregion
+
+    //region SOCKET-RELATED PARAMETERS
+    private Socket outSocket;
+    private ObjectOutputStream outStream;
+    //endregion
+
+    //region INTERNAL STATE PARAMETERS
+    private final ExecutorService incomingSocketsExecutor;
+    private final ExecutorService incomingMessagesExecutor;
+
+    private CompletableFuture<Object> sentOperationTimeout;
+    private CountDownLatch sentOperationCompletedLatch;
+    private CountDownLatch incomingMessageListenerReadyLatch;
+    private final AtomicBoolean checksStarted;
+    private final AtomicBoolean simCompleted;
+    //endregion
+
+    //region CONSTANTS
     private static final int SOCKET_TIMEOUT_S = 30;
     private static final int OPERATION_TIMEOUT_S = 60;
     private static final int MIN_VALUE_TO_WRITE = 0;
     private static final int MAX_VALUE_TO_WRITE = 999;
-//    private static final int OPERATIONS_PER_SECOND = 5;
+//    private static final int OPERATIONS_PER_SECOND = 1;
+    //endregion
 
     public ClientLoadSim(
             Address clientAddress,
@@ -62,29 +71,14 @@ public class ClientLoadSim {
     ) {
         this.clientAddress = clientAddress;
         this.brokerAddress = brokerAddress;
-        this.clientId = null;
-
-        this.nextOperationId = new AtomicInteger(0);
-        this.sentOperationCompletedLatch = null;
-        this.sentOperationTimeout = null;
-
-        this.incomingSocketsExecutor = Executors.newFixedThreadPool(100);
-        this.incomingMessagesExecutor = Executors.newSingleThreadExecutor();
-        this.incomingMessageListenerReadyLatch = null;
-        this.outSocket = null;
-        this.outStream = null;
-        this.checksStarted = new AtomicBoolean(false);
-        this.simCompleted = new AtomicBoolean(false);
-
         this.totalOperations = totalOperations;
         this.readWriteRatio = readWriteRatio;
         this.queueNames = queueNames;
+
+        this.clientId = null;
         this.completedOperations = new CopyOnWriteArrayList<>();
         this.failedOperations = new CopyOnWriteArrayList<>();
-
-        this.startTime = new AtomicLong();
-        this.endTime = new AtomicLong();
-
+        this.nextOperationId = new AtomicInteger(0);
         this.writtenQueues = new ConcurrentHashMap<>();
         for (String queueName : queueNames) {
             writtenQueues.put(queueName, new CopyOnWriteArrayList<>());
@@ -92,7 +86,20 @@ public class ClientLoadSim {
         this.readQueueNames = new ConcurrentHashMap<>();
         this.expectedValues = new ConcurrentHashMap<>();
         this.readValues = new ConcurrentHashMap<>();
-        this.readValuesObtainedLatch = null;
+        this.startTime = new AtomicLong();
+        this.endTime = new AtomicLong();
+
+        this.outSocket = null;
+        this.outStream = null;
+
+        this.incomingSocketsExecutor = Executors.newFixedThreadPool(100);
+        this.incomingMessagesExecutor = Executors.newSingleThreadExecutor();
+
+        this.sentOperationTimeout = null;
+        this.sentOperationCompletedLatch = null;
+        this.incomingMessageListenerReadyLatch = null;
+        this.checksStarted = new AtomicBoolean(false);
+        this.simCompleted = new AtomicBoolean(false);
     }
 
     public LoadSimResults start() throws InterruptedException {
@@ -154,9 +161,10 @@ public class ClientLoadSim {
         // mark the simulation as completed
         simCompleted.set(true);
 
-        // shutdown the executors
+        // shutdown the executors and the listener thread
         incomingMessagesExecutor.shutdownNow();
         incomingSocketsExecutor.shutdownNow();
+        listenerThread.interrupt();
 
         // close the outgoing socket
         if (outSocket != null) {
@@ -208,7 +216,9 @@ public class ClientLoadSim {
                     incomingSocketsExecutor.execute(() -> handleIncomingConnection(socket));
                 }
                 catch (IOException e) {
-                    System.out.println("[ERROR]: Unable to accept incoming socket connection: " + e.getMessage());
+                    if (!simCompleted.get()) {
+                        System.out.println("[ERROR]: Unable to accept incoming socket connection: " + e.getMessage());
+                    }
                 }
             }
         } catch (IOException e) {
@@ -224,10 +234,10 @@ public class ClientLoadSim {
                     Message message = (Message) inStream.readObject();
 
                     incomingMessagesExecutor.execute(() -> {
+                        System.out.println("[PINGUINO]: Received " + message + "from broker " + inSocket.getPort());
                         switch (message) {
                             case ClientIdAssignment msg -> handleClientIdAssignment(msg);
                             case ReadResponse msg       -> handleReadResponse(msg);
-                            case ReadConfirmation msg   -> handleReadConfirmation(msg);
                             case WriteResponse msg      -> handleWriteResponse(msg);
                             default -> System.out.println("[INFO]: Non-client message received.");
                         }
@@ -269,20 +279,6 @@ public class ClientLoadSim {
             readQueueNames.put(msg.operationId(), msg.queueName());
             expectedValues.put(msg.operationId(), new CopyOnWriteArrayList<>(writtenQueues.get(msg.queueName())));
             readValues.put(msg.operationId(), new CopyOnWriteArrayList<>(msg.values()));
-        }
-
-        readValuesObtainedLatch.countDown();
-    }
-
-    private void handleReadConfirmation(ReadConfirmation msg) {
-        System.out.println("[INFO]: Client " + clientAddress + " received ReadConfirmation for operation " + msg.operationId());
-
-        // wait for ReadResponse to be received and processed
-        try {
-            readValuesObtainedLatch.await();
-        } catch (InterruptedException e) {
-            System.out.println("[GABBIANO]: Read confirmation interrupted for client " + clientId);
-            return;
         }
 
         // check if the read values are coherent with the written ones
@@ -350,7 +346,7 @@ public class ClientLoadSim {
             ensureOutSocketExists();
 
             // send the request
-            outStream.writeObject(new ClientIdRequest(clientAddress));
+            outStream.writeObject(new ClientIdRequest(clientAddress, brokerAddress));
             outStream.flush();
 
             System.out.println("[INFO]: Client " + clientAddress + " sent ClientIdRequest");
@@ -372,7 +368,7 @@ public class ClientLoadSim {
             ensureOutSocketExists();
 
             // send the request
-            outStream.writeObject(new ReadRequest(queueName, clientId, operationId, clientAddress));
+            outStream.writeObject(new ReadRequest(queueName, clientId, operationId, clientAddress, brokerAddress));
             outStream.flush();
 
             System.out.println("[INFO]: Client " + clientId + " sent ReadRequest " + operationId);
@@ -380,10 +376,11 @@ public class ClientLoadSim {
             // start timeout and set latch to wait for the response
             startOperationTimeout(operationId);
             sentOperationCompletedLatch = new CountDownLatch(1);
-            readValuesObtainedLatch = new CountDownLatch(1);
         } catch (IOException e) {
             System.out.println("[ERROR]: Failed to send ReadRequest " + operationId + " for client " + clientId);
             failedOperations.add(operationId);
+            outSocket = null;
+            outStream = null;
         }
     }
 
@@ -395,7 +392,7 @@ public class ClientLoadSim {
             ensureOutSocketExists();
 
             // send the request
-            outStream.writeObject(new WriteRequest(queueName, valueToWrite, clientId, operationId, clientAddress));
+            outStream.writeObject(new WriteRequest(queueName, valueToWrite, clientId, operationId, clientAddress, brokerAddress));
             outStream.flush();
 
             // store the written value locally
@@ -411,6 +408,8 @@ public class ClientLoadSim {
         } catch (IOException e) {
             System.out.println("[ERROR]: Failed to send WriteRequest " + operationId + " for client " + clientId);
             failedOperations.add(operationId);
+            outSocket = null;
+            outStream = null;
         }
     }
 
@@ -426,14 +425,21 @@ public class ClientLoadSim {
             System.out.println("[INFO]: Client " + clientId + " sent Ack for operation " + operationId);
         } catch (IOException e) {
             System.out.println("[ERROR]: Failed to send Ack " + operationId + " for client " + clientId);
+            outSocket = null;
+            outStream = null;
         }
     }
 
     private void ensureOutSocketExists() throws IOException {
-        if (outSocket == null) {
-            outSocket = new Socket();
-            outSocket.connect(new InetSocketAddress(brokerAddress.ip(), brokerAddress.port()), SOCKET_TIMEOUT_S * 1000);
-            outStream = new ObjectOutputStream(outSocket.getOutputStream());
+        try {
+            if (outSocket == null) {
+                outSocket = new Socket();
+                outSocket.setKeepAlive(true);
+                outSocket.connect(new InetSocketAddress(brokerAddress.ip(), brokerAddress.port()), SOCKET_TIMEOUT_S * 1000);
+                outStream = new ObjectOutputStream(outSocket.getOutputStream());
+            }
+        } catch (IOException e) {
+            System.out.println("[BALENA]: era la ensuresocketexists che faila a creare la socket: " + e.getMessage());
         }
     }
 
@@ -469,6 +475,11 @@ public class ClientLoadSim {
         Address brokerAddress = brokerInput.isEmpty() ?
                 new Address("127.0.0.1", 5001) :
                 parseAddress(brokerInput);
+
+        // if loopback address has been specified as broker address, replace it with the actual IP address of the machine
+        if (brokerAddress.ip().equals("127.0.0.1")) {
+            brokerAddress = new Address(obtainClientIp(), brokerAddress.port());
+        }
 
         System.out.print("Enter total operations to perform [default: 100]: ");
         String totalOperationsInput = scanner.nextLine().trim();
