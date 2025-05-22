@@ -130,11 +130,11 @@ public class MessageDispatcher {
             if(sharedState.isEntryWaitingAck(msg.logEntry())) {
                 System.out.println("[INFO]: Received propagation ACK for waiting log entry " + msg.logEntry() + ". Adding it to the log...");
 
-                // commit the entry locally
-                logManager.commitEntry(msg.logEntry());
-
                 // broadcast the EntryCommit message
                 networkManager.broadcastMessage(new EntryCommit(msg.logEntry()), brokerId, sharedState);
+
+                // commit the entry locally
+                logManager.commitEntry(msg.logEntry());
             }
         }
     }

@@ -12,6 +12,7 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -34,28 +35,47 @@ public class Client {
 
     private static final CountDownLatch isIncomingMessagesListenerReady = new CountDownLatch(1);
 
-    private static final ScheduledExecutorService waitingTimeoutExecutor = Executors.newScheduledThreadPool(1);
+    private static final ScheduledExecutorService waitingTimeoutExecutor = Executors.newSingleThreadScheduledExecutor();
     private static ScheduledFuture<?> waitingTimeoutFuture;
+    private static final AtomicInteger waitingTimeoutFailed = new AtomicInteger(0);
+    private static final int WAITING_TIMEOUT_S = 60;
 
     // pool for handling connections in parallel
     private static final ExecutorService connectionPool = Executors.newFixedThreadPool(100);
 
-    private static void startWaitingTimeout() {
-        waitingTimeoutFuture = waitingTimeoutExecutor.schedule(Client::waitingTimeoutExpired, 1, TimeUnit.MINUTES);  //TODO: replace with constant timeout value
+    private static void startWaitingTimeout(Message sentMessage) {
+        waitingTimeoutFuture = waitingTimeoutExecutor.schedule(() -> waitingTimeoutExpired(sentMessage), WAITING_TIMEOUT_S, TimeUnit.SECONDS);
     }
 
     private static void cancelWaitingTimeout() {
         if (waitingTimeoutFuture != null && !waitingTimeoutFuture.isDone()) {
             waitingTimeoutFuture.cancel(true);
+            waitingTimeoutFailed.set(0);
         }
     }
 
-    private static void waitingTimeoutExpired() {
+    private static void waitingTimeoutExpired(Message sentMessage) {
         synchronized (clientStateLock) {
             if (clientState != ClientState.READY) {
-                System.out.println("[ERROR]: Could not connect to the broker. Please specify a valid broker address.");
-                clientState = ClientState.READY;
-                obtainKnownBrokerAddress();
+                if (waitingTimeoutFailed.getAndIncrement() < 3) {
+                    System.out.println("[ERROR]: Timeout expired while waiting for a response from the broker. Trying again...");
+
+                    try {
+                        currentOutStream.writeObject(sentMessage);
+                        currentOutStream.flush();
+                    } catch (IOException | NullPointerException ignored) {
+                        System.out.println("[ERROR]: Could not connect to the known broker. Please specify a valid broker address.");
+                        clientState = ClientState.READY;
+                        cancelWaitingTimeout();
+                        obtainKnownBrokerAddress();
+                    }
+                }
+                else {
+                    System.out.println("[ERROR]: Unable to receive response from the brokers. Please try specifying another known broker address.");
+                    clientState = ClientState.READY;
+                    cancelWaitingTimeout();
+                    obtainKnownBrokerAddress();
+                }
             }
         }
     }
@@ -228,9 +248,6 @@ public class Client {
                 System.out.println("[INFO]: Read response received. Waiting for confirmation message.");
 
                 pendingReadValues = msg.values();
-                cancelWaitingTimeout();
-                startWaitingTimeout();
-
             } else {
                 System.out.println("[INFO]: Unexpected ReadResponse message received.");
             }
@@ -309,10 +326,11 @@ public class Client {
                 }
 
                 try {
-                    currentOutStream.writeObject(new ClientIdRequest(clientAddress));
+                    Message sentMessage = new ClientIdRequest(clientAddress);
+                    currentOutStream.writeObject(sentMessage);
                     currentOutStream.flush();
                     clientState = ClientState.WAITING_ID;
-                    startWaitingTimeout();
+                    startWaitingTimeout(sentMessage);
                     requestSent = true;
 
                     System.out.println("[INFO]: Sent client ID request. If this is a reconnection, you'll receive your previous ID.");
@@ -335,11 +353,12 @@ public class Client {
             }
 
             try {
-                currentOutStream.writeObject(new ReadRequest(queueId, clientId, nextOperationId++, clientAddress));
+                Message sentMessage = new ReadRequest(queueId, clientId, nextOperationId++, clientAddress);
+                currentOutStream.writeObject(sentMessage);
                 currentOutStream.flush();
 
                 clientState = ClientState.WAITING_READ;
-                startWaitingTimeout();
+                startWaitingTimeout(sentMessage);
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
                 obtainOutSocket();
@@ -371,11 +390,12 @@ public class Client {
             }
 
             try {
-                currentOutStream.writeObject(new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress));
+                Message sentMessage = new WriteRequest(queueId, newValue, clientId, nextOperationId++, clientAddress);
+                currentOutStream.writeObject(sentMessage);
                 currentOutStream.flush();
 
                 clientState = ClientState.WAITING_WRITE;
-                startWaitingTimeout();
+                startWaitingTimeout(sentMessage);
             } catch (IOException e) {
                 System.out.println("[ERROR]: Unable to reach the broker at the given address. Please specify another one and try again.");
                 obtainOutSocket();
