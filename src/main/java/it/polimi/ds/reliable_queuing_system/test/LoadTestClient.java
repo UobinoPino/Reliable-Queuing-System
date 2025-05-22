@@ -54,6 +54,8 @@ public class LoadTestClient {
     private long operationDelayMs;
     private final boolean verboseLogging;
 
+    private volatile boolean shuttingDown = false;
+
     public LoadTestClient(
             Address clientAddress,
             Address brokerAddress,
@@ -129,7 +131,7 @@ public class LoadTestClient {
         public PooledConnection(Socket socket) throws IOException {
             this.socket = socket;
             this.outputStream = new ObjectOutputStream(socket.getOutputStream());
-            this.outputStream.flush(); // Important: flush the header immediately
+            this.outputStream.flush();
         }
 
         public ObjectInputStream getInputStream() throws IOException {
@@ -332,39 +334,10 @@ public class LoadTestClient {
         boolean completed = completionLatch.await(testTimeoutSeconds, TimeUnit.SECONDS);
 
         // Test finished
-        running = false;
-        long endTime = System.currentTimeMillis();
-        executorService.shutdownNow();
+        shutdownClient();
 
-        try {
-            if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
-                executorService.shutdownNow();
-            }
-        } catch (InterruptedException ie) {
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-        processingPool.shutdownNow();
-        try {
-            if (!processingPool.awaitTermination(1, TimeUnit.SECONDS)) {
-                processingPool.shutdownNow();
-            }
-        } catch (InterruptedException ignored) {
-            processingPool.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-        // Add this after shutting down other executors
-        incomingConnectionsPool.shutdownNow();
-        try {
-            if (!incomingConnectionsPool.awaitTermination(1, TimeUnit.SECONDS)) {
-                incomingConnectionsPool.shutdownNow();
-            }
-        } catch (InterruptedException ignored) {
-            incomingConnectionsPool.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-        timeoutExecutor.shutdownNow();
-        closeAllConnections();
+        long endTime = System.currentTimeMillis();
+
 
         // Print results
         System.out.println("\n===== LOAD TEST RESULTS =====");
@@ -404,6 +377,49 @@ public class LoadTestClient {
                 ", verboseLogging=" + verboseLogging +
                 ", maxPoolSize=" + maxPoolSize +
                 '}';
+    }
+    private void shutdownClient() {
+        // Mark as shutting down first to prevent new tasks
+        shuttingDown = true;
+        running = false;
+
+        // First cancel any pending timeouts
+        for (ScheduledFuture<?> future : pendingTimeouts.values()) {
+            if (future != null && !future.isDone()) {
+                future.cancel(true);
+            }
+        }
+        pendingTimeouts.clear();
+
+        // Shut down executors in proper order
+        timeoutExecutor.shutdownNow();
+        executorService.shutdownNow();
+
+        // Allow a moment for main operations to stop
+        try {
+            executorService.awaitTermination(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Then shut down processing pools
+        processingPool.shutdownNow();
+        try {
+            processingPool.awaitTermination(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Finally shut down connection handling
+        incomingConnectionsPool.shutdownNow();
+        try {
+            incomingConnectionsPool.awaitTermination(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Close all connections
+        closeAllConnections();
     }
 
     private void incomingMessagesListener() {
@@ -457,6 +473,7 @@ public class LoadTestClient {
                 } catch (EOFException | SocketException e) {
                     break; // connection closed
                 } catch (ClassNotFoundException e) {
+                    System.out.println("[AAAAAA]: Unknown message type received: " + e.getMessage());
                     throw new RuntimeException(e);
                 }
             }
@@ -663,7 +680,7 @@ public class LoadTestClient {
                     brokerAddress,
                     clientId,
                     totalOperations,
-                    180,  // max duration in seconds of the simulation
+                    120,  // max duration in seconds of the simulation
                     readWriteRatio,
                     queueIds,
                     1,    // min value

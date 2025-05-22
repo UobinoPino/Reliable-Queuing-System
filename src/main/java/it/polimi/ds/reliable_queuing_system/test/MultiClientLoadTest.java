@@ -8,10 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Scanner;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -66,7 +63,7 @@ public class MultiClientLoadTest {
                     queueIds,
                     1,         // min value
                     1000,      // max value
-                    500,       // operation delay (200 mean 5 ops/sec per client)
+                    200,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
                     200, // connection pool size
                     200
