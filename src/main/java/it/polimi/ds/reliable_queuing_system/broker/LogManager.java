@@ -52,6 +52,34 @@ public class LogManager {
         return sharedState.getLeaderId() == brokerId;
     }
 
+    /// Sends a message with retry mechanism (up to 3 attempts)
+
+    private void sendMessageWithRetry(Message message, Address address) {
+        boolean messageSent = false;
+        int attempts = 0;
+        int maxAttempts = 3;
+
+        while (attempts < maxAttempts) {
+            attempts++;
+            messageSent = networkManager.sendMessage(message, address);
+
+            if (messageSent) {
+                break;
+            } else if (attempts < maxAttempts) {
+                System.out.println("Failed to send message" + message + ", attempt " + attempts + " of " + maxAttempts + ", retrying...");
+                // Add a small delay between retries
+                try {
+                    Thread.sleep(100); // 100ms delay between retries
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            } else {
+                System.out.println("Failed to send message after " + maxAttempts + " attempts");
+            }
+        }
+
+    }
+
     /// Add to the list of known brokers in the [SharedState] the broker who sent the given [BrokerJoinRequest].
     private void addBroker(BrokerJoinRequest req) {
         // obtain a new id for the broker to be added
@@ -62,7 +90,7 @@ public class LogManager {
 
         // If leader, return a BrokerJoinResponse to the requesting broker
         if (isLeader()) {
-            networkManager.sendMessage(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
+            sendMessageWithRetry(new BrokerJoinResponse(newBrokerId, sharedState), req.brokerAddress());
         }
     }
 
@@ -74,7 +102,7 @@ public class LogManager {
 
         // if I'm the broker originally contacted by the client, return this id to the requesting client
         if (req.contactedBrokerAddress().equals(brokerAddress)) {
-            networkManager.sendMessage(new ClientIdAssignment(clientId), req.clientAddress());
+            sendMessageWithRetry(new ClientIdAssignment(clientId), req.clientAddress());
         }
     }
 
@@ -97,7 +125,7 @@ public class LogManager {
 
         // if I'm the broker originally contacted by the client, return the read confirmation to the requesting client
         if(req.contactedBrokerAddress().equals(brokerAddress)){
-            networkManager.sendMessage(new ReadResponse(req.clientId(), req.operationId(), req.queueName(), newValues), req.clientAddress());
+            sendMessageWithRetry(new ReadResponse(req.clientId(), req.operationId(), req.queueName(), newValues), req.clientAddress());
             System.out.println("Sending back results for op " + req.operationId() + " to " + req.clientAddress());
         }
     }
@@ -110,7 +138,7 @@ public class LogManager {
 
         // if I'm the broker originally contacted by the client, send the WriteResponse to the requesting client
         if(req.contactedBrokerAddress().equals(brokerAddress)){
-            networkManager.sendMessage(new WriteResponse(req.operationId()), req.clientAddress());
+            sendMessageWithRetry(new WriteResponse(req.operationId()), req.clientAddress());
             System.out.println("Sending back results for op " + req.operationId() + " to " + req.clientAddress());
         }
     }

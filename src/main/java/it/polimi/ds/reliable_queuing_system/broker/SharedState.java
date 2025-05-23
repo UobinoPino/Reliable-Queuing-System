@@ -67,6 +67,16 @@ public class SharedState implements Serializable {
         return new ArrayList<>(waitingCommitEntries);
     }
 
+    /// Return a snapshot of entries waiting for ACK
+    public synchronized List<LogEntry> getWaitingAckEntries() {
+        return new ArrayList<>(waitingAckEntries);
+    }
+
+    /// Clear all entries waiting for ACK
+    public synchronized void clearWaitingAckEntries() {
+        waitingAckEntries.clear();
+    }
+
     //region PERSISTENCE-RELATED METHODS
 
     /// Initialize the Gson object with a custom serialization/deserialization adapter for the [Address] type.

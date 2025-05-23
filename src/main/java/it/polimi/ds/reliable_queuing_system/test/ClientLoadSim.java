@@ -55,8 +55,8 @@ public class ClientLoadSim {
     //endregion
 
     //region CONSTANTS
-    private static final int SOCKET_TIMEOUT_S = 30;
-    private static final int OPERATION_TIMEOUT_S = 60;
+    private static final int SOCKET_TIMEOUT_S = 60;
+    private static final int OPERATION_TIMEOUT_S = 180;
     private static final int MIN_VALUE_TO_WRITE = 0;
     private static final int MAX_VALUE_TO_WRITE = 999;
 //    private static final int OPERATIONS_PER_SECOND = 1;
@@ -356,7 +356,7 @@ public class ClientLoadSim {
             sentOperationCompletedLatch = new CountDownLatch(1);
         } catch (IOException e) {
             System.out.println("[ERROR]: Failed to send ClientIdRequest for client " + clientAddress);
-            System.exit(1);  //TODO: maybe should be something else since it will run inside a thread
+            System.exit(1);  //TODO: maybe should be something else since it will run inside a threads
         }
     }
 

@@ -100,6 +100,17 @@ public class HeartbeatManager {
         // Check for follower timeouts
         Set<Integer> removedBrokers = checkFollowersTimeouts();
 
+        // if only this broker remains, commit all pending entries immediately
+        if (sharedState.getBrokersCount() == 1) {
+            List<LogEntry> pending = sharedState.getWaitingAckEntries();
+            for (LogEntry entry : pending) {
+                logManager.commitEntry(entry);
+                // notify any (none) followers – safe even if empty
+                networkManager.broadcastMessage(new EntryCommit(entry), brokerId, sharedState);
+            }
+            sharedState.clearWaitingAckEntries();
+        }
+
         // Process broker removals
         for (Integer broker : removedBrokers) {
             System.out.println("[INFO]: Broker " + broker + " failed. Asking other followers to remove it...");
