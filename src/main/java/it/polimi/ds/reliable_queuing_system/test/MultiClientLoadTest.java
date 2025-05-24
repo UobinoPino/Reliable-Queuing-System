@@ -63,7 +63,7 @@ public class MultiClientLoadTest {
                     queueIds,
                     1,         // min value
                     1000,      // max value
-                    200,       // operation delay (200 mean 5 ops/sec per client)
+                    500,       // operation delay (200 mean 5 ops/sec per client)
                     verboseLogging,
                     200, // connection pool size
                     200

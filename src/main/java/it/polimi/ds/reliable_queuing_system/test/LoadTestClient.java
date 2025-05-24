@@ -55,6 +55,7 @@ public class LoadTestClient {
     private final boolean verboseLogging;
 
     private volatile boolean shuttingDown = false;
+    private final Set<Integer> receivedResponses;
 
     public LoadTestClient(
             Address clientAddress,
@@ -71,6 +72,7 @@ public class LoadTestClient {
             int maxPoolSize,
             int concurrentOperations) {
         this.clientAddress = clientAddress;
+        this.receivedResponses = ConcurrentHashMap.newKeySet();
         this.brokerAddress = brokerAddress;
         this.clientId = clientId;
         this.totalOperations = totalOperations;
@@ -431,7 +433,7 @@ public class LoadTestClient {
     private void incomingMessagesListener() {
         try (ServerSocket serverSocket = new ServerSocket(clientAddress.port())) {
             System.out.println("Load test client ready to receive messages at port: " + clientAddress.port());
-            serverSocket.setSoTimeout(1000); // Add timeout to check running flag periodically
+            //serverSocket.setSoTimeout(5000); // Add timeout to check running flag periodically
 
             while (running) {
                 try {
@@ -517,15 +519,22 @@ public class LoadTestClient {
     }
 
     private void handleReadResponse(ReadResponse msg) {
-        OperationDetail detail = pendingOperations.remove(msg.operationId());
+        int opId = msg.operationId();
+        if (!receivedResponses.add(opId)) {
+//            System.out.println("[INFO]: Duplicate ReadResponse received for operation "
+//                    + opId + ". Ignoring for client " + clientId
+//                    + " at address " + clientAddress);
+            return;
+        }
+        OperationDetail detail = pendingOperations.remove(opId);
         if (detail != null) {
-            cancelOperationTimeout(msg.operationId());
+            cancelOperationTimeout(opId);
             long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
-            System.out.println("Read response received:  for client  " + clientId + " for operationId= " + msg.operationId() + " clientAddress=" + clientAddress);
-            sendAck(msg.operationId());
+            System.out.println("Read response received:  for client  " + clientId + " for operationId= " + opId + " clientAddress=" + clientAddress);
+            sendAck(opId);
         }
     }
 
@@ -548,15 +557,24 @@ public class LoadTestClient {
 //    }
 
     private void handleWriteResponse(WriteResponse msg) {
-        OperationDetail detail= pendingOperations.remove(msg.operationId());
+        int opId = msg.operationId();
+        // If this response was already seen, ignore it
+        if (!receivedResponses.add(opId)) {
+//            System.out.println("[INFO]: Duplicate WriteResponse received for operation "
+//                    + opId + ". Ignoring for client " + clientId
+//                    + " at address " + clientAddress);
+            return;
+        }
+
+        OperationDetail detail = pendingOperations.remove(opId);
         if (detail != null) {
-            cancelOperationTimeout(msg.operationId());
+            cancelOperationTimeout(opId);
             long latency = System.currentTimeMillis() - detail.startTime;
             totalLatency.addAndGet(latency);
             successfulOperations.incrementAndGet();
             completionLatch.countDown();
-            System.out.println("Write response received received:  for client  " + clientId+ " for operationId= " + msg.operationId()   + " clientAddress="  +clientAddress);
-            sendAck(msg.operationId());
+            System.out.println("Write response received received:  for client  " + clientId+ " for operationId= " + opId  + " clientAddress="  +clientAddress);
+            sendAck(opId);
 
 //            if (verboseLogging) {
 //                System.out.println("Write confirmed for operation " + msg.operationId() + " (latency: " + latency + " ms)");
