@@ -74,6 +74,38 @@
           </execution>
 
           <execution>
+            <id>client-sim-shade</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>client-load-sim</finalName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>it.polimi.ds.reliable_queuing_system.test.ClientLoadSim</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+
+          <execution>
+            <id>multi-client-sim-shade</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <finalName>multi-client-load-sim</finalName>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>it.polimi.ds.reliable_queuing_system.test.MultiClientLoadSim</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+
+          <execution>
             <id>multi_client_load_test-shade</id>
             <phase>package</phase>
             <goals>

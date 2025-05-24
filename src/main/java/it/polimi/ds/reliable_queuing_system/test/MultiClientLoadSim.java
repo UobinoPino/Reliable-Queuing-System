@@ -17,7 +17,7 @@ import java.util.concurrent.Future;
 public class MultiClientLoadSim {
     private static final ExecutorService clientsSimExecutor = Executors.newFixedThreadPool(100);
 
-    public static void main(String[] args) throws ExecutionException, InterruptedException {
+    public static void main(String[] args) throws InterruptedException {
         System.out.println("======== RELIABLE QUEUING SYSTEM: MULTI-CLIENT LOAD SIMULATION ========");
 
         Scanner scanner = new Scanner(System.in);
@@ -68,7 +68,11 @@ public class MultiClientLoadSim {
             int clientNum = i;
             Address brokerAddr = brokerAddress;
             Future<LoadSimResults> simResultsFuture = clientsSimExecutor.submit(() -> startClientSim(clientNum, brokerAddr, totalOperations, readWriteRatio, queueNamePrefix, queuesNum));
-            results.add(simResultsFuture.get());
+            try {
+                results.add(simResultsFuture.get());
+            } catch (ExecutionException e) {
+                System.out.println("[FATAL ERROR]: Simulation of client " + i + " failed to obtain a client ID.");
+            }
         }
 
         // aggregate results

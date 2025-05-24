@@ -10,6 +10,7 @@ import java.net.*;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,6 +27,7 @@ public class ClientLoadSim {
 
     //region SIMULATION-RELATED PARAMETERS
     private Integer clientId;
+    private final Set<Integer> receivedResponses;
     private final List<Integer> completedOperations;
     private final List<Integer> failedOperations;
     private final AtomicInteger nextOperationId;
@@ -76,6 +78,7 @@ public class ClientLoadSim {
         this.queueNames = queueNames;
 
         this.clientId = null;
+        this.receivedResponses = ConcurrentHashMap.newKeySet();
         this.completedOperations = new CopyOnWriteArrayList<>();
         this.failedOperations = new CopyOnWriteArrayList<>();
         this.nextOperationId = new AtomicInteger(0);
@@ -234,7 +237,6 @@ public class ClientLoadSim {
                     Message message = (Message) inStream.readObject();
 
                     incomingMessagesExecutor.execute(() -> {
-                        System.out.println("[PINGUINO]: Received " + message + "from broker " + inSocket.getPort());
                         switch (message) {
                             case ClientIdAssignment msg -> handleClientIdAssignment(msg);
                             case ReadResponse msg       -> handleReadResponse(msg);
@@ -258,6 +260,11 @@ public class ClientLoadSim {
     }
 
     private void handleClientIdAssignment(ClientIdAssignment msg) {
+        if (!completedOperations.add(-1)) {
+            System.out.println("[INFO]: Duplicated ClientIdAssignment received for client " + clientAddress + ". Ignoring.");
+            return;
+        }
+
         System.out.println("[INFO]: Client " + clientAddress + " received client ID assignment: " + msg.clientId());
 
         // register the obtained client ID
@@ -272,6 +279,11 @@ public class ClientLoadSim {
     }
 
     private void handleReadResponse(ReadResponse msg) {
+        if (!receivedResponses.add(msg.operationId())) {
+            System.out.println("[INFO]: Duplicated ReadResponse received for operation " + msg.operationId() + ". Ignoring.");
+            return;
+        }
+
         System.out.println("[INFO]: Client " + clientAddress + " received ReadResponse for operation " + msg.operationId());
 
         // store the read values
@@ -325,6 +337,12 @@ public class ClientLoadSim {
     }
 
     private void handleWriteResponse(WriteResponse msg) {
+        // ignore duplicated responses
+        if (!receivedResponses.add(msg.operationId())) {
+            System.out.println("[INFO]: Duplicated WriteResponse received for operation " + msg.operationId() + ". Ignoring.");
+            return;
+        }
+
         System.out.println("[INFO]: Client " + clientAddress + " received WriteResponse for operation " + msg.operationId());
 
         // register the completed operation
@@ -356,7 +374,7 @@ public class ClientLoadSim {
             sentOperationCompletedLatch = new CountDownLatch(1);
         } catch (IOException e) {
             System.out.println("[ERROR]: Failed to send ClientIdRequest for client " + clientAddress);
-            System.exit(1);  //TODO: maybe should be something else since it will run inside a threads
+            throw new RuntimeException("Failed to send ClientIdRequest", e);
         }
     }
 
@@ -430,7 +448,7 @@ public class ClientLoadSim {
         }
     }
 
-    private void ensureOutSocketExists() throws IOException {
+    private void ensureOutSocketExists() {
         try {
             if (outSocket == null) {
                 outSocket = new Socket();
@@ -439,7 +457,7 @@ public class ClientLoadSim {
                 outStream = new ObjectOutputStream(outSocket.getOutputStream());
             }
         } catch (IOException e) {
-            System.out.println("[BALENA]: era la ensuresocketexists che faila a creare la socket: " + e.getMessage());
+            System.out.println("[ERROR]: Unable to create output socket: " + e.getMessage());
         }
     }
 
@@ -507,16 +525,20 @@ public class ClientLoadSim {
                 queueNames
         );
 
-        LoadSimResults simResults = clientLoadSim.start();
+        try {
+            LoadSimResults simResults = clientLoadSim.start();
 
-        // print the results
-        System.out.println("\n====== Simulation of Client " + simResults.clientId() + " completed ======");
-        System.out.println("Test duration: " + simResults.totalTime() + " ms");
-        System.out.println("Total operations issued: " + simResults.totalOperations());
-        System.out.println("Operations completed: " + simResults.successfulOperations());
-        System.out.println("Operations failed: " + simResults.failedOperations());
-        System.out.println("Lost operations: " + (simResults.totalOperations() - simResults.successfulOperations() - simResults.failedOperations()));
-        System.out.println("Throughput: " + simResults.throughput() + " ops/s");
+            // print the results
+            System.out.println("\n====== Simulation of Client " + simResults.clientId() + " completed ======");
+            System.out.println("Test duration: " + simResults.totalTime() + " ms");
+            System.out.println("Total operations issued: " + simResults.totalOperations());
+            System.out.println("Operations completed: " + simResults.successfulOperations());
+            System.out.println("Operations failed: " + simResults.failedOperations());
+            System.out.println("Lost operations: " + (simResults.totalOperations() - simResults.successfulOperations() - simResults.failedOperations()));
+            System.out.println("Throughput: " + simResults.throughput() + " ops/s");
+        } catch (RuntimeException e) {
+            System.out.println("[FATAL ERROR]: Simulation of client " + clientLoadSim.clientAddress + " failed to obtain a client ID.");
+        }
     }
 
     private static String obtainClientIp() {
