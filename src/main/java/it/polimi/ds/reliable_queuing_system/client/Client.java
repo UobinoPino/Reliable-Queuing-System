@@ -172,6 +172,11 @@ public class Client {
             }
         }
 
+        // if loopback address has been specified as broker address, replace it with the actual IP address of the machine
+        if (addr[0].equals("127.0.0.1")) {
+            addr[0] = obtainClientIp();
+        }
+
         return new Address(addr[0], Integer.parseInt(addr[1]));
     }
 

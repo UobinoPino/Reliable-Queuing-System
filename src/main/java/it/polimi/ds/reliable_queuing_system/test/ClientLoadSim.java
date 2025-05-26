@@ -247,9 +247,6 @@ public class ClientLoadSim {
                 } catch (ClassNotFoundException | ClassCastException e) {
                     System.out.println("[INFO]: Unknown message received: " + e.getMessage());
                 } catch (IOException ignored) {
-                    if (!simCompleted.get()) {
-                        System.out.println("[CANE]: Socket closed? Is it safe to ignore?");  //TODO: check and hopefully remove
-                    }
                     break;
                 }
             }

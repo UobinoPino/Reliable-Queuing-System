@@ -636,7 +636,7 @@
     </mxGraphModel>
   </diagram>
   <diagram name="leader_crash" id="XPuf4HbePUKPiKoMO7Oa">
-    <mxGraphModel dx="2745" dy="2122" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="2158" dy="1303" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="xPHQ6PnsQ9FeaSIkuYwE-0" />
         <mxCell id="xPHQ6PnsQ9FeaSIkuYwE-1" parent="xPHQ6PnsQ9FeaSIkuYwE-0" />
@@ -802,9 +802,9 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="xPHQ6PnsQ9FeaSIkuYwE-31" value="random timeout expires&amp;nbsp;&lt;div&gt;without new heartbeat (3 times)&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];rounded=1;sketch=1;jiggle=2;curveFitting=1;strokeColor=default;fontFamily=Excalifont;fontSize=11;fontColor=default;labelBackgroundColor=default;fillColor=default;" parent="xPHQ6PnsQ9FeaSIkuYwE-30" vertex="1" connectable="0">
+        <mxCell id="xPHQ6PnsQ9FeaSIkuYwE-31" value="random timeout expires&amp;nbsp;&lt;div&gt;without new heartbeat (3 times)&lt;br&gt;-&amp;gt;&lt;br&gt;commit waiting entries&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];rounded=1;sketch=1;jiggle=2;curveFitting=1;strokeColor=default;fontFamily=Excalifont;fontSize=11;fontColor=default;labelBackgroundColor=default;fillColor=default;" parent="xPHQ6PnsQ9FeaSIkuYwE-30" vertex="1" connectable="0">
           <mxGeometry x="-0.1555" y="1" relative="1" as="geometry">
-            <mxPoint x="-3" y="-20" as="offset" />
+            <mxPoint x="-12" y="-38" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="xPHQ6PnsQ9FeaSIkuYwE-32" value="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];rounded=1;sketch=1;jiggle=2;curveFitting=1;strokeColor=default;fontFamily=Excalifont;fontSize=11;fontColor=#CC0000;labelBackgroundColor=default;fillColor=default;" parent="xPHQ6PnsQ9FeaSIkuYwE-30" vertex="1" connectable="0">

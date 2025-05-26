@@ -403,7 +403,6 @@ public class MessageDispatcher {
         pendingRequestIds.remove(id);
         pendingRequests.remove(id);
         System.out.println("[INFO]: Completed request " + id + " has been removed from pending requests");
-        System.out.println("[Segull]: Pending requests: " + pendingRequestIds.size() + ", delayed messages: " + delayedMessages.size());
 
     }
 
