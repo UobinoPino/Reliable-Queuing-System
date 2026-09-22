@@ -67,10 +67,10 @@ public class MessageDispatcher {
         // if there is an election ongoing, ignore messages unrelated to the election,
         // and store them so that they will be handled after the election
         if ((batchProcessingActive || electionInfo.isElectionInProgress())
-                        && !isElectionRelated(message)&& !skipDelay) {
-                    delayedMessages.add(message);
-                   return;
-               }
+                && !isElectionRelated(message)&& !skipDelay) {
+            delayedMessages.add(message);
+            return;
+        }
 
         // Regular message processing for non-critical messages
         switch (message) {
@@ -116,17 +116,29 @@ public class MessageDispatcher {
             // store the entry as waiting for commit
             sharedState.addWaitingCommitEntry(msg.logEntry());
 
-            // send an ACK to the leader
+            // send an ACK to the leader (including our own id, so that the leader can count
+            // how many *distinct* followers acknowledged the entry)
             Address leaderAddr = sharedState.getBrokerAddress(sharedState.getLeaderId());
-            networkManager.sendMessage(new EntryPropagationAck(msg.logEntry()), leaderAddr);
+            networkManager.sendMessage(new EntryPropagationAck(msg.logEntry(), brokerId), leaderAddr);
         }
     }
 
     /// Handler method for received [EntryPropagationAck] messages.
+    ///
+    /// The entry is committed only once it has been replicated on a **majority** of the
+    /// brokers: the leader registers the ACK and commits only when the number of distinct
+    /// followers that acknowledged the entry reached `SharedState.getRequiredAcks()`.
+    /// Committing after a single ACK would make the entry survive on 2 brokers only,
+    /// so it could be lost (after being confirmed to the client!) as soon as those 2 crash,
+    /// even when a majority of the cluster is still alive.
     private void handleEntryPropagationAck(EntryPropagationAck msg) {
         if (isLeader()) {
-            if(sharedState.isEntryWaitingAck(msg.logEntry())) {
-                System.out.println("[INFO]: Received propagation ACK for waiting log entry " + msg.logEntry() + ". Adding it to the log...");
+            System.out.println("[INFO]: Received propagation ACK from broker " + msg.brokerId() + " for log entry " + msg.logEntry());
+
+            // register the ACK, and check whether the entry reached the majority quorum.
+            // (this returns true for exactly one ACK per entry, so no double commit is possible)
+            if (sharedState.registerAckAndCheckQuorum(msg.logEntry(), msg.brokerId())) {
+                System.out.println("[INFO]: Log entry " + msg.logEntry() + " reached the majority quorum. Adding it to the log...");
 
                 // commit the entry locally
                 boolean committed = logManager.commitEntry(msg.logEntry());
@@ -347,12 +359,17 @@ public class MessageDispatcher {
             int receivedAcksCount = electionInfo.getReceivedAcksCount();
             int activeBrokersCount = sharedState.getBrokersCount();
 
+            // a candidate needs the votes of a majority of the brokers to become leader.
+            // it votes for itself, so it needs floor(n/2) ACKs to reach floor(n/2) + 1 votes.
+            // (requiring ACKs from *all* the other brokers, as done before, would block the
+            // election on every single slow or crashed broker without adding any safety)
+            int requiredAcks = activeBrokersCount / 2;
 
-            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount - 1));
+            System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + requiredAcks);
 
-            // if all ACKs have been received...
-            if (receivedAcksCount >= activeBrokersCount - 1) {
-                System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
+            // if a majority of the brokers acknowledged the nomination...
+            if (receivedAcksCount >= requiredAcks) {
+                System.out.println("[INFO]: Received ACKs from a majority of the " + activeBrokersCount + " active brokers. Becoming new leader");
 
                 // become leader
                 sharedState.setNewLeaderId(brokerId);
@@ -423,7 +440,7 @@ public class MessageDispatcher {
         batchProcessingActive = true;
         int processedCount = 0;
         boolean hasMore = false;
-            // Process a batch of pending requests
+        // Process a batch of pending requests
         while (!pendingRequestIds.isEmpty() && processedCount < BATCH_SIZE) {
             String id = pendingRequestIds.poll();
             Message msg = pendingRequests.get(id);
@@ -466,4 +483,4 @@ public class MessageDispatcher {
         }
 
     }
-    }
+}

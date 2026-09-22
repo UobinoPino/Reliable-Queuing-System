@@ -46,6 +46,11 @@ public class SharedState implements Serializable {
     private final List<LogEntry> waitingCommitEntries = new CopyOnWriteArrayList<>();
     private final List<LogEntry> pendingEntries = new CopyOnWriteArrayList<>();
     private final List<LogEntry> log = new CopyOnWriteArrayList<>();
+
+    /// For every entry still waiting for ACKs (key = entry index), the set of ids of the
+    /// followers that already acknowledged it. A Set is used so that duplicated ACKs
+    /// coming from the same follower are counted only once.
+    private final Map<Integer, Set<Integer>> propagationAcks = new ConcurrentHashMap<>();
     //endregion
 
 
@@ -75,6 +80,7 @@ public class SharedState implements Serializable {
     /// Clear all entries waiting for ACK
     public synchronized void clearWaitingAckEntries() {
         waitingAckEntries.clear();
+        propagationAcks.clear();
     }
 
     //region PERSISTENCE-RELATED METHODS
@@ -336,9 +342,81 @@ public class SharedState implements Serializable {
         return waitingAckEntries.contains(logEntry);
     }
 
+    /// Returns the number of *follower* ACKs the leader needs before committing an entry.
+    ///
+    /// An entry can be committed only when it is stored by a **strict majority** of the
+    /// brokers, i.e. by `floor(n/2) + 1` of them. The leader already stores the entry
+    /// itself, so its own copy is the `+1`: it only has to collect `floor(n/2)` ACKs.
+    ///
+    /// Examples: n=2 -> 1 ACK, n=3 -> 1 ACK, n=4 -> 2 ACKs, n=5 -> 2 ACKs, n=7 -> 3 ACKs.
+    ///
+    /// Requiring a majority here (instead of a single ACK) is what makes the protocol safe:
+    /// since a new leader is also elected by a majority, the two sets necessarily overlap on
+    /// at least one broker, and since the candidate with the longest log wins the election,
+    /// the new leader is guaranteed to own every already-committed entry.
+    public int getRequiredAcks() {
+        return knownBrokers.size() / 2;
+    }
+
+    /// Registers the ACK sent by broker `senderId` for the given [LogEntry] and returns
+    /// whether the entry has to be committed now.
+    ///
+    /// It returns `true` for **exactly one** ACK per entry: the one that brings the entry
+    /// to the majority quorum. Late/duplicated ACKs (and ACKs for entries this broker is no
+    /// longer waiting for) return `false`, so the entry can never be committed twice.
+    public synchronized boolean registerAckAndCheckQuorum(LogEntry entry, int senderId) {
+        // ignore ACKs for entries that are not waiting for an ACK anymore
+        // (already committed, or never propagated by this broker)
+        if (!waitingAckEntries.contains(entry)) {
+            return false;
+        }
+
+        // register the ACK (duplicated ACKs from the same broker are ignored by the Set)
+        Set<Integer> acks = propagationAcks.computeIfAbsent(entry.index(), k -> new HashSet<>());
+        acks.add(senderId);
+
+        int requiredAcks = getRequiredAcks();
+        System.out.println("[INFO]: Entry " + entry.index() + " ACK count: " + acks.size() + "/" + requiredAcks
+                + " (cluster size: " + knownBrokers.size() + ")");
+
+        // not enough ACKs yet: keep waiting
+        if (acks.size() < requiredAcks) {
+            return false;
+        }
+
+        // quorum reached: "claim" the entry by moving it out of the waiting-ACK list, so that
+        // no concurrent ACK for the same entry can reach this point and commit it a second time
+        waitingAckEntries.remove(entry);
+        waitingCommitEntries.add(entry);
+        return true;
+    }
+
+    /// Re-evaluates the quorum of an entry that is still waiting for ACKs, without registering
+    /// a new one. It is used by the leader after removing crashed brokers: a smaller cluster
+    /// means a smaller majority, so entries that were blocked may have become committable.
+    ///
+    /// As [#registerAckAndCheckQuorum], it returns `true` at most once per entry.
+    public synchronized boolean recheckQuorum(LogEntry entry) {
+        if (!waitingAckEntries.contains(entry)) {
+            return false;
+        }
+
+        int receivedAcks = propagationAcks.getOrDefault(entry.index(), Collections.emptySet()).size();
+        if (receivedAcks < getRequiredAcks()) {
+            return false;
+        }
+
+        waitingAckEntries.remove(entry);
+        waitingCommitEntries.add(entry);
+        return true;
+    }
+
     /// Tries to permanently add the given [LogEntry] to the log,
     /// and returns if the operation has been successful or not.
     public synchronized boolean commitEntry(LogEntry logEntry) {
+        // the ACKs collected for this entry are not needed anymore
+        propagationAcks.remove(logEntry.index());
+
         // remove the given entry from the waiting list it's currently in (if any)
         int waitingAckPos = waitingAckEntries.indexOf(logEntry);
         int waitingCommitPos = waitingCommitEntries.indexOf(logEntry);

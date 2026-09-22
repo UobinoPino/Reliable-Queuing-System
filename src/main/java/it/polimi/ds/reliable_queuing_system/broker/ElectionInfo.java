@@ -151,11 +151,17 @@ public class ElectionInfo {
                 // re-check received ACKs
                 int activeBrokersCount = sharedState.getBrokersCount();
                 int receivedAcksCount = receivedAcks.size();
-                System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + (activeBrokersCount-1));
 
-                // if all ACKs have been received become new leader
-                if (receivedAcksCount >= activeBrokersCount - 1) {
-                    System.out.println("[INFO]: Received ACKs from all " + activeBrokersCount + " active brokers. Becoming new leader");
+                // same majority rule used in MessageDispatcher.handleNewLeaderNominationAck:
+                // the candidate votes for itself, so it needs floor(n/2) ACKs to reach a
+                // strict majority of floor(n/2) + 1 votes
+                int requiredAcks = activeBrokersCount / 2;
+
+                System.out.println("[INFO]: Current ACK count: " + receivedAcksCount + "/" + requiredAcks);
+
+                // if a majority of the brokers acknowledged the nomination, become new leader
+                if (receivedAcksCount >= requiredAcks) {
+                    System.out.println("[INFO]: Received ACKs from a majority of the " + activeBrokersCount + " active brokers. Becoming new leader");
 
                     // change leader
                     sharedState.setNewLeaderId(myId);

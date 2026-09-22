@@ -44,7 +44,7 @@ public class HeartbeatManager {
     private final Map<Integer, Integer> missedHeartbeats;
 
     private final NetworkManager networkManager;
-     private final LogManager logManager;
+    private final LogManager logManager;
 
     /// Offload sending HeartbeatAck to dedicated executor
     public void sendAck(int followerId) {
@@ -100,15 +100,18 @@ public class HeartbeatManager {
         // Check for follower timeouts
         Set<Integer> removedBrokers = checkFollowersTimeouts();
 
-        // if only this broker remains, commit all pending entries immediately
-        if (sharedState.getBrokersCount() == 1) {
-            List<LogEntry> pending = sharedState.getWaitingAckEntries();
-            for (LogEntry entry : pending) {
-                logManager.commitEntry(entry);
-                // notify any (none) followers – safe even if empty
-                networkManager.broadcastMessage(new EntryCommit(entry), brokerId, sharedState);
+        // Removing crashed brokers shrinks the cluster, and therefore the size of a majority:
+        // re-evaluate the quorum of the entries that are still waiting for ACKs, since some of
+        // them may have become committable. This also covers the single-broker case, where the
+        // number of required ACKs is 0 and every waiting entry is committed immediately.
+        for (LogEntry entry : sharedState.getWaitingAckEntries()) {
+            if (sharedState.recheckQuorum(entry)) {
+                System.out.println("[INFO]: Entry " + entry.index() + " reached the majority quorum after broker removal. Committing...");
+                if (logManager.commitEntry(entry)) {
+                    // notify the remaining followers (safe even if there are none)
+                    networkManager.broadcastMessage(new EntryCommit(entry), brokerId, sharedState);
+                }
             }
-            sharedState.clearWaitingAckEntries();
         }
 
         // Process broker removals
@@ -132,7 +135,7 @@ public class HeartbeatManager {
 
                     // remove the leader from the list of known brokers
                     sharedState.removeBrokerAddress(sharedState.getLeaderId());
-                    
+
                     List<LogEntry> waitingEntries = sharedState.getWaitingCommitEntries();
                     if (!waitingEntries.isEmpty()) {
                         System.out.println("[INFO]: Processing " + waitingEntries.size() + " entries that were waiting for commit");
